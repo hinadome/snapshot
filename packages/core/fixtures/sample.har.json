@@ -1,0 +1,81 @@
+{
+  "log": {
+    "version": "1.2",
+    "creator": { "name": "test", "version": "1.0" },
+    "pages": [
+      {
+        "startedDateTime": "2024-01-01T10:00:00.000Z",
+        "id": "page_0",
+        "title": "Home",
+        "pageTimings": { "onContentLoad": 100, "onLoad": 200 }
+      },
+      {
+        "startedDateTime": "2024-01-01T10:00:05.000Z",
+        "id": "page_1",
+        "title": "About",
+        "pageTimings": { "onContentLoad": 80, "onLoad": 150 }
+      }
+    ],
+    "entries": [
+      {
+        "pageref": "page_0",
+        "startedDateTime": "2024-01-01T10:00:00.000Z",
+        "time": 50,
+        "_resourceType": "document",
+        "request": {
+          "method": "GET",
+          "url": "https://example.com/",
+          "headers": [{ "name": "Accept", "value": "text/html" }]
+        },
+        "response": {
+          "status": 200,
+          "statusText": "OK",
+          "headers": [],
+          "content": {
+            "size": 32,
+            "mimeType": "text/html",
+            "text": "<html><body>Home</body></html>"
+          }
+        }
+      },
+      {
+        "pageref": "page_0",
+        "startedDateTime": "2024-01-01T10:00:00.050Z",
+        "time": 20,
+        "_resourceType": "stylesheet",
+        "request": {
+          "method": "GET",
+          "url": "https://example.com/style.css",
+          "headers": []
+        },
+        "response": {
+          "status": 200,
+          "content": {
+            "size": 12,
+            "mimeType": "text/css",
+            "text": "body{margin:0}"
+          }
+        }
+      },
+      {
+        "pageref": "page_1",
+        "startedDateTime": "2024-01-01T10:00:05.000Z",
+        "time": 40,
+        "_resourceType": "document",
+        "request": {
+          "method": "GET",
+          "url": "https://example.com/about",
+          "headers": [{ "name": "Accept", "value": "text/html" }]
+        },
+        "response": {
+          "status": 200,
+          "content": {
+            "size": 34,
+            "mimeType": "text/html",
+            "text": "<html><body>About</body></html>"
+          }
+        }
+      }
+    ]
+  }
+}
