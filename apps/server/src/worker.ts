@@ -4,9 +4,14 @@ import {
   parseHarJson,
   requireStrategy,
 } from '@snapshot/core';
+import { executeCapturePlan } from '@snapshot/replay';
 import { getJob, updateJob } from './job-store.js';
-import { harPath } from './paths.js';
-import { capturePointFromHar } from './replay.js';
+import {
+  deleteUploadedHarArtifacts,
+  harPath,
+  jobDir,
+  screenshotFile,
+} from './paths.js';
 
 const queue: string[] = [];
 let running = false;
@@ -46,6 +51,7 @@ async function processJob(jobId: string): Promise<void> {
     await updateJob(jobId, {
       status: 'planning',
       harStats: index.stats,
+      harSource: index.sourceInfo,
       indexWarnings: index.warnings,
       progress: {
         current: 0,
@@ -77,29 +83,29 @@ async function processJob(jobId: string): Promise<void> {
       },
     });
 
-    const results = [];
-    for (let i = 0; i < capturePoints.length; i++) {
-      const point = capturePoints[i]!;
-      await updateJob(jobId, {
-        progress: {
-          current: i,
-          total: capturePoints.length,
-          message: `Capturing ${i + 1}/${capturePoints.length}: ${point.label}`,
+    const dir = jobDir(jobId);
+    const results = await executeCapturePlan(
+      harPath(jobId),
+      capturePoints,
+      (captureId) => screenshotFile(jobId, captureId),
+      {
+        harDir: dir,
+        headless: true,
+        onProgress: async (current, total, label) => {
+          await updateJob(jobId, {
+            progress: {
+              current,
+              total,
+              message: label,
+            },
+          });
         },
-      });
+      },
+    );
 
-      const result = await capturePointFromHar(jobId, point);
-      results.push(result);
-
-      await updateJob(jobId, {
-        results: [...results],
-        progress: {
-          current: i + 1,
-          total: capturePoints.length,
-          message: `Captured ${i + 1}/${capturePoints.length}`,
-        },
-      });
-    }
+    await updateJob(jobId, {
+      results: [...results],
+    });
 
     const captureWarnings = results.flatMap((r) =>
       r.warnings.map((w) => `[${r.id}] ${w.replace(/\s+/g, ' ').trim()}`),
@@ -115,6 +121,9 @@ async function processJob(jobId: string): Promise<void> {
         message: 'Done',
       },
     });
+
+    // HAR / zip assets are only needed during capture
+    await deleteUploadedHarArtifacts(jobId);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await updateJob(jobId, {
@@ -126,5 +135,6 @@ async function processJob(jobId: string): Promise<void> {
         message: 'Failed',
       },
     });
+    // Keep uploaded HAR on failure for debugging / retry inspection
   }
 }

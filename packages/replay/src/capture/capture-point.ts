@@ -1,42 +1,45 @@
-import { chromium, type Browser } from 'playwright';
 import type { CapturePoint, CaptureResult } from '@snapshot/core';
-import { attachHarRouter, loadHarRouteTable } from './har-router.js';
-import { harPath, screenshotFile } from './paths.js';
+import { attachHarRouter, loadHarRouteTable } from '../router/har-router.js';
+import { getBrowser, DEFAULT_VIEWPORT } from './browser.js';
 
-let browserPromise: Promise<Browser> | null = null;
-
-async function getBrowser(): Promise<Browser> {
-  if (!browserPromise) {
-    browserPromise = chromium.launch({ headless: true });
-  }
-  return browserPromise;
-}
-
-export async function closeBrowser(): Promise<void> {
-  if (browserPromise) {
-    const b = await browserPromise;
-    browserPromise = null;
-    await b.close();
-  }
-}
+export type CaptureOptions = {
+  screenshotPath: string;
+  harDir?: string;
+  headless?: boolean;
+  offline?: boolean;
+};
 
 function oneLine(message: string): string {
   return message.replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Replay a single capture point by serving network from the HAR file.
- */
-export async function capturePointFromHar(
-  jobId: string,
+async function waitForRender(page: import('playwright').Page): Promise<void> {
+  try {
+    await page.waitForLoadState('load', { timeout: 20_000 });
+  } catch {
+    // DOM may still be usable
+  }
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 10_000 });
+  } catch {
+    // SPAs often never reach networkidle
+  }
+  await page.waitForTimeout(500);
+}
+
+export async function captureFromHar(
+  harPath: string,
   point: CapturePoint,
+  options: CaptureOptions,
 ): Promise<CaptureResult> {
   const warnings: string[] = [];
-  const outPath = screenshotFile(jobId, point.id);
-  const table = await loadHarRouteTable(harPath(jobId));
-  const browser = await getBrowser();
+  const outPath = options.screenshotPath;
+  const table = await loadHarRouteTable(harPath);
+  table.harDir = options.harDir ?? table.harDir;
+
+  const browser = await getBrowser(options.headless ?? true);
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 720 },
+    viewport: DEFAULT_VIEWPORT,
     deviceScaleFactor: 1,
     javaScriptEnabled: true,
     serviceWorkers: 'block',
@@ -53,30 +56,33 @@ export async function capturePointFromHar(
 
     try {
       await page.goto(point.url, {
-        waitUntil: point.waitUntil,
+        waitUntil: 'domcontentloaded',
         timeout: 45_000,
       });
+      await waitForRender(page);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       warnings.push(`Navigation issue: ${oneLine(message)}`);
       try {
         await page.waitForLoadState('domcontentloaded', { timeout: 5_000 });
+        await waitForRender(page);
       } catch {
-        // ignore — screenshot whatever we have
+        // screenshot whatever rendered
       }
     }
 
     if (failed.length > 0) {
-      const sample = failed.slice(0, 3).join('; ');
+      const sample = failed.slice(0, 5).join('; ');
       warnings.push(
-        `${failed.length} request(s) not found in HAR (aborted). e.g. ${sample}`,
+        `${failed.length} request(s) not served from HAR. Missing assets, dynamic URLs (tokens), or WebSockets often cause incomplete pages. e.g. ${sample}`,
       );
     }
 
     await page.screenshot({
       path: outPath,
-      fullPage: true,
+      fullPage: point.fullPage ?? true,
       type: 'png',
+      animations: 'disabled',
     });
 
     return {

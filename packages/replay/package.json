@@ -1,5 +1,5 @@
 {
-  "name": "@snapshot/core",
+  "name": "@snapshot/replay",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,6 +16,11 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "tsx --test 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@snapshot/core": "workspace:*",
+    "fflate": "^0.8.2",
+    "playwright": "^1.51.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

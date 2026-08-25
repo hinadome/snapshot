@@ -1,107 +1,267 @@
 # Snapshot
 
-Local web app that reconstructs pages from a HAR file with Playwright and shows screenshots in capture-time order.
+**Local-first HAR page reconstruction.** Upload (or paste) a network capture, replay it offline with Playwright, and browse screenshots in capture-time order.
 
-HAR files stay on your machine. Playwright runs locally. Nothing is uploaded to a remote server.
+Nothing leaves your machine: HARs and PNGs stay under `data/`. Playwright runs locally.
+
+| | |
+|--|--|
+| **Version** | `0.1.0` — see [CHANGELOG.md](CHANGELOG.md) |
+| **UI** | http://localhost:5173 |
+| **API** | http://localhost:8787 |
+| **Stack** | pnpm monorepo · Vite/React · Hono · Playwright · TypeScript |
+
+---
 
 ## Quick start
 
 ```bash
-pnpm install
-pnpm dev
+pnpm install   # also installs Chromium for Playwright
+pnpm dev       # web + API
 ```
 
-- UI: http://localhost:5173  
-- API: http://localhost:8787  
+1. Open the UI  
+2. Drop a **HAR with content** (or `.har.zip`), or paste check-result JSON / base64  
+3. Pick a **capture strategy**  
+4. Click **Reconstruct pages**  
+5. Scrub the timeline (filter by kind if you used multi-frame strategies)
 
-Open the UI, drop a `.har` exported **with content**, and click **Reconstruct pages**.
+CLI (same engine):
+
+```bash
+pnpm replay -- path/to/capture.har
+pnpm replay -- --strategy page-timing path/to/session.har.zip
+pnpm replay -- --scroll --out ./har-screenshots path/to/capture.har
+```
+
+---
+
+## Features
+
+- **Offline reconstruction** from HAR / Playwright zip via a shared fulfill router  
+- **Pluggable strategies** — one API/UI dropdown for navigation, load milestones, or scroll frames  
+- **Timeline** — ordered screenshots with kind badges and filters (`all` / `navigation` / `milestone` / `periodic`)  
+- **Recent jobs** — reopen completed runs without re-uploading  
+- **Multiple inputs** — DevTools HAR, Playwright attach zip, check-result JSON, paste  
+- **Parity** — web app and `pnpm replay` share `@snapshot/core` + `@snapshot/replay`  
+- **Post-capture cleanup** — after a successful job, uploaded HAR / zip body files are deleted; only `job.json` + screenshots remain
+
+---
 
 ## Capturing a good HAR
 
-1. Open Chrome (or Edge) DevTools → **Network**
-2. Check **Preserve log** if you navigate across pages
-3. Browse the sites/pages you care about
-4. Right-click the request list → **Save all as HAR with content**
+1. Chrome/Edge DevTools → **Network**  
+2. Enable **Preserve log** for multi-page flows  
+3. Load the pages you care about (wait until settled)  
+4. Right-click → **Save all as HAR with content**
 
-Without response bodies, reconstruction will fail or look empty. Snapshot reports body-coverage % after indexing.
+Headers-only exports will look empty. Snapshot reports **body coverage %** after indexing.
+
+### Playwright attach zip
+
+```
+export.har.zip
+├── har.har              # HAR JSON; bodies via content._file
+└── <hash> / asset.js …  # raw response bodies
+```
+
+Snapshot extracts the **full** archive (HAR + sidecars) into the job folder so `_file` bodies resolve during replay.
+
+---
+
+## Input formats
+
+| Input | How |
+|-------|-----|
+| DevTools `.har` | Drop / choose file |
+| Playwright `.har.zip` | Drop / choose — full extract including `_file` assets |
+| Check-result JSON (`harZipBase64` / `har`) | File or **paste** in UI |
+| Raw `harZipBase64` / data URL | Paste in UI |
+| Max size | 200MB |
+
+---
 
 ## How it works
 
-1. **Upload** — HAR is stored under `data/jobs/<id>/`
-2. **Index** — `@snapshot/core` finds document navigations and timings
-3. **Plan** — a **capture strategy** emits ordered `CapturePoint`s
-4. **Replay** — a custom HAR router fulfills requests from captured responses (`abort` when missing)
-5. **Timeline** — screenshots are shown by `atMs` from session start
-
-### Capture strategies
-
-v1 ships **`document-navigation`**: one screenshot per navigated HTML document.
-
-Strategies are pluggable. The job API accepts `strategyId`, and `GET /api/strategies` lists registered ones so the UI can grow without API changes.
-
-#### Adding a strategy
-
-1. Implement `CaptureStrategy` in `packages/core`:
-
-```ts
-import type { CaptureStrategy } from '../strategy.js';
-import type { CapturePoint, HarIndex } from '../types.js';
-
-export class PageTimingStrategy implements CaptureStrategy {
-  readonly id = 'page-timing';
-  readonly name = 'Page timings';
-  readonly description = 'Screenshots at DOMContentLoaded and load per page.';
-
-  plan(index: HarIndex): CapturePoint[] {
-    // return CapturePoint[] with kind: 'milestone'
-    return [];
-  }
-}
+```text
+Upload / paste
+    → ingest (@snapshot/replay)     normalize to capture.har (+ zip assets)
+    → index (@snapshot/core)        main-frame navigations, timings, HarSourceInfo
+    → plan (CaptureStrategy)        ordered CapturePoint[]
+    → capture (executeCapturePlan)  Playwright + HAR fulfill router → PNGs
+    → cleanup (API worker)          delete HAR / zip sidecars on success
+    → timeline                      items by atMs + kind (job.json + PNGs only)
 ```
 
-2. Register it in `registerBuiltInStrategies()` in `packages/core/src/registry.ts`.
-3. Rebuild / restart. The strategy appears in the UI dropdown automatically.
+Multi-stage points for the **same URL** share one browser session (progressive load / scroll).
 
-Future ideas that fit the same pipeline:
+The CLI (`pnpm replay`) writes screenshots to an output dir and does **not** delete the source HAR — cleanup applies only to API jobs under `data/jobs/`.
 
-- `milestone` — DOMContentLoaded + load
-- `periodic` — every N seconds while a page is open
+---
 
-The timeline schema already includes `kind: 'navigation' | 'milestone' | 'periodic'`.
+## Capture strategies
+
+| ID | Frames per page | Use when |
+|----|-----------------|----------|
+| `document-navigation` | 1 × full page | Default; multi-page HARs |
+| `page-timing` | commit → DCL → load → networkidle → fullpage | Progressive paint |
+| `scroll-viewport` | load + scroll viewports + fullpage | Long pages |
+
+```bash
+pnpm replay -- --strategy page-timing ./site.har
+pnpm replay -- --scroll ./site.har    # → scroll-viewport
+```
+
+Timeline **kinds**:
+
+| Kind | Meaning |
+|------|---------|
+| `navigation` | Primary page shot |
+| `milestone` | Load-stage / fullpage |
+| `periodic` | Scroll viewport frames |
+
+### Adding a strategy
+
+1. Add a class under `packages/core/src/strategies/` implementing `CaptureStrategy`  
+2. Register it in `registerBuiltInStrategies()` (`packages/core/src/registry.ts`)  
+3. Rebuild / restart — it appears in the UI and `pnpm replay -- --help`  
+
+Set `stage` / `scrollIndex` on `CapturePoint` when frames should share one Playwright session.
+
+---
 
 ## Monorepo layout
 
 ```
-apps/web          Vite + React UI
-apps/server       Hono API + Playwright worker
-packages/core     HAR indexer, strategies, shared types
-data/             Local uploads and screenshots (gitignored)
+apps/web              Vite + React (upload, paste, timeline, recent jobs)
+apps/server           Hono API + job worker
+packages/core         Types, HarIndex, CaptureStrategy registry
+packages/replay       Ingest, inspect, HAR router, Playwright capture
+scripts/replay-har.ts CLI entry
+data/jobs/            Job metadata + screenshots (gitignored; HAR deleted after success)
+IMPLEMENT.md          Phased implementation checklist
+CHANGELOG.md          Release history
 ```
+
+---
+
+## Data storage (API server)
+
+The local API (`apps/server`) persists job data **on the machine running the server** only (no remote upload). Root: `data/jobs/` (override with `SNAPSHOT_DATA_DIR`).
+
+### Lifecycle
+
+1. **Ingest** — write `capture.har` (and Playwright zip `_file` sidecars) into `data/jobs/<jobId>/`
+2. **Capture** — Playwright reads those files; screenshots land in `screenshots/`
+3. **Success** — delete uploaded HAR artifacts; keep `job.json` + `screenshots/`
+4. **Failure** — keep the HAR so you can inspect / debug
+
+**During capture:**
+
+```text
+data/jobs/<jobId>/
+├── capture.har              # uploaded HAR
+├── <hash> / …               # zip _file body sidecars (if any)
+├── job.json
+└── screenshots/
+    └── <captureId>.png
+```
+
+**After success** (what the timeline UI loads):
+
+```text
+data/jobs/<jobId>/
+├── job.json                 # metadata, plan, results, warnings, harStats
+└── screenshots/
+    └── <captureId>.png
+```
+
+| Data | During capture | After success | After failure |
+|------|----------------|---------------|---------------|
+| HAR + zip `_file` bodies | Stored | **Deleted** | Kept (debug) |
+| `job.json` | Stored | Kept | Kept |
+| Screenshots | Written | Kept | Partial / none |
+
+Ingest may use short-lived OS temp dirs (`/tmp/snapshot-*`); those are removed after the job folder is written.
+
+**Retention:** no TTL or delete-job API yet. Completed jobs leave `job.json` + PNGs under `data/jobs/` until you remove them. The `data/` tree is gitignored.
+
+---
 
 ## API
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Liveness |
-| GET | `/api/strategies` | Registered capture strategies |
-| POST | `/api/jobs` | Multipart: `file`, optional `strategyId` |
-| GET | `/api/jobs/:id` | Job status / progress |
-| GET | `/api/jobs/:id/timeline` | Ordered capture results |
+| GET | `/api/strategies` | Strategy list |
+| GET | `/api/jobs?limit=20` | Recent jobs |
+| POST | `/api/jobs` | Create job (multipart **or** JSON/text) |
+| GET | `/api/jobs/:id` | Status / progress / `harSource` / warnings |
+| GET | `/api/jobs/:id/timeline` | Ordered frames |
 | GET | `/api/jobs/:id/screenshots/:captureId.png` | PNG |
 
-## Limitations
+### Create job — multipart
 
-- Best for multi-page / document navigations; SPAs that need clicks after load may look incomplete
-- WebSockets, service workers, and requests missing from the HAR are aborted
-- Playwright matches URL + method (+ POST body) strictly
-- Zip HARs (Playwright archive format): extract to a `.har` first for v1
+`file` + optional `strategyId` (default `document-navigation`).
+
+### Create job — JSON
+
+`content` may be a **string or object** (object form is what you get from `curl` + `jq`):
+
+```bash
+curl -s -X POST http://localhost:8787/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d "{\"strategyId\":\"document-navigation\",\"content\":$(jq -c . packages/core/fixtures/sample.har.json)}"
+```
+
+Also supported: `{ "harZipBase64": "…" }`, `{ "har": "…" }`, or a raw HAR (`log`) merged with `strategyId`:
+
+```bash
+jq -c '{strategyId:"document-navigation"} + .' packages/core/fixtures/sample.har.json \
+  | curl -s -X POST http://localhost:8787/api/jobs -H 'Content-Type: application/json' -d @-
+```
+
+---
 
 ## Scripts
 
 ```bash
-pnpm dev          # web + server
-pnpm test         # core unit tests
-pnpm build        # build all packages
+pnpm dev              # UI + API
+pnpm replay -- <file> # CLI screenshots
+pnpm test             # core + replay (unit + integration)
+pnpm build            # all packages
 ```
 
-Chromium is installed via Playwright on `pnpm install` (`postinstall`).
+Requires **Node ≥ 20**.
+
+---
+
+## Limitations
+
+HAR replay is **offline network mocking**, not a full browser time machine:
+
+| Situation | Typical result |
+|-----------|----------------|
+| HAR without response bodies | Blank / broken pages |
+| Assets never recorded in the HAR | Missing CSS/JS; incomplete layout |
+| Dynamic query tokens | Pathname fallback helps; not perfect |
+| SPA needing clicks after load | Only the initial document |
+| Captcha / login | Often incomplete offline |
+| Iframes / ads | Not separate timeline entries (main frame only) |
+
+Job **warnings** list requests that could not be served from the HAR. A few analytics misses are normal; many misses on first-party JS/CSS usually mean an incomplete export.
+
+---
+
+## Documentation
+
+| Doc | Purpose |
+|-----|---------|
+| [CHANGELOG.md](CHANGELOG.md) | What shipped in each version |
+| [IMPLEMENT.md](IMPLEMENT.md) | Phase-by-phase build checklist |
+
+---
+
+## License
+
+Private / local tooling unless otherwise specified.

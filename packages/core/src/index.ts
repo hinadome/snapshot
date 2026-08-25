@@ -6,6 +6,7 @@ export type {
   HarEntrySummary,
   HarIndex,
   HarPage,
+  HarSourceInfo,
   JobStatus,
   JobSummary,
   StrategyInfo,
@@ -23,6 +24,16 @@ export {
   DocumentNavigationStrategy,
   documentNavigationStrategy,
 } from './strategies/document-navigation.js';
+
+export {
+  PageTimingStrategy,
+  pageTimingStrategy,
+} from './strategies/page-timing.js';
+
+export {
+  ScrollViewportStrategy,
+  scrollViewportStrategy,
+} from './strategies/scroll-viewport.js';
 
 export {
   getStrategy,

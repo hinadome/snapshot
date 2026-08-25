@@ -12,6 +12,7 @@ type HarContent = {
   mimeType?: string;
   text?: string;
   encoding?: string;
+  _file?: string;
 };
 
 type HarResponse = {
@@ -66,33 +67,118 @@ function isHtmlMime(mimeType: string): boolean {
   return lower === 'text/html' || lower === 'application/xhtml+xml';
 }
 
-function looksLikeDocument(entry: HarEntry, mimeType: string): boolean {
+function isMainFrameDocument(entry: HarEntry): boolean {
   const resourceType = (entry._resourceType ?? '').toLowerCase();
-  if (resourceType === 'document' || resourceType === 'mainframe') {
-    return true;
-  }
-  if (!isHtmlMime(mimeType)) return false;
+  return resourceType === 'document' || resourceType === 'mainframe';
+}
 
+function looksLikeHtmlNavigation(entry: HarEntry, mimeType: string): boolean {
+  if (!isHtmlMime(mimeType)) return false;
   const method = (entry.request?.method ?? 'GET').toUpperCase();
   if (method !== 'GET' && method !== 'POST') return false;
 
-  // Prefer top-level navigations: HTML without typical XHR accept headers,
-  // or first HTML per pageref. Resource-type hint already handled above.
   const accept = (entry.request?.headers ?? [])
     .find((h) => h.name.toLowerCase() === 'accept')
     ?.value?.toLowerCase() ?? '';
 
   if (accept.includes('text/html')) return true;
-  // Chrome often still marks documents; if mime is HTML and no fetch mode, keep it
   if (!accept || accept.includes('*/*')) return true;
   return false;
+}
+
+function buildMainDocuments(
+  entriesRaw: HarEntry[],
+  sessionStartMs: number,
+  pageMap: Map<string, HarPage>,
+): DocumentNavigation[] {
+  const byPageref = new Map<string, HarEntry[]>();
+
+  entriesRaw.forEach((entry) => {
+    const url = entry.request?.url ?? '';
+    const status = entry.response?.status ?? 0;
+    const mimeType = entry.response?.content?.mimeType ?? '';
+    if (!url || status < 200 || status >= 400) return;
+
+    const pageref = entry.pageref ?? 'page_0';
+    const isMainDoc = isMainFrameDocument(entry);
+    const isHtmlNav = looksLikeHtmlNavigation(entry, mimeType);
+
+    if (!isMainDoc && !isHtmlNav) return;
+
+    if (!byPageref.has(pageref)) byPageref.set(pageref, []);
+    byPageref.get(pageref)!.push(entry);
+  });
+
+  const docs: DocumentNavigation[] = [];
+
+  for (const [pageref, group] of byPageref) {
+    group.sort(
+      (a, b) =>
+        (parseTimeMs(a.startedDateTime) ?? sessionStartMs) -
+        (parseTimeMs(b.startedDateTime) ?? sessionStartMs),
+    );
+
+    const main =
+      group.find((e) => isMainFrameDocument(e)) ??
+      group.find((e) =>
+        looksLikeHtmlNavigation(
+          e,
+          e.response?.content?.mimeType ?? '',
+        ),
+      ) ??
+      group[0];
+
+    if (!main) continue;
+
+    const url = main.request?.url ?? '';
+    const startedDateTime = main.startedDateTime ?? '';
+    const startedAbs = parseTimeMs(startedDateTime) ?? sessionStartMs;
+    const entryIndex = entriesRaw.indexOf(main);
+
+    docs.push({
+      entryIndex: entryIndex >= 0 ? entryIndex : 0,
+      pageref,
+      url,
+      startedDateTime,
+      startedMs: startedAbs - sessionStartMs,
+      title: pageTitle(pageMap, pageref, url),
+      mimeType: main.response?.content?.mimeType ?? '',
+      status: main.response?.status ?? 200,
+      hasBody: hasResponseBody(main.response?.content),
+    });
+  }
+
+  return docs.sort((a, b) => a.startedMs - b.startedMs);
 }
 
 function hasResponseBody(content?: HarContent): boolean {
   if (!content) return false;
   if (typeof content.text === 'string' && content.text.length > 0) return true;
-  // size > 0 without text means body was omitted from export
+  if (content._file) return true;
   return false;
+}
+
+function detectHarSource(creatorName: string): NonNullable<HarIndex['sourceInfo']> {
+  const lower = creatorName.toLowerCase();
+  let source = 'har';
+  if (lower.includes('webinspector') || lower.includes('chrome')) {
+    source = 'devtools-chrome';
+  } else if (lower.includes('firefox')) {
+    source = 'devtools-firefox';
+  } else if (lower.includes('playwright')) {
+    source = 'playwright';
+  } else if (creatorName) {
+    source = `har:${creatorName}`;
+  }
+  return {
+    source,
+    creatorName: creatorName || null,
+    entryCount: 0,
+    pageCount: 0,
+    withBody: 0,
+    bodyCoveragePct: 0,
+    hasDocument: false,
+  };
 }
 
 function pageTitle(
@@ -173,7 +259,6 @@ export function buildHarIndex(raw: unknown): HarIndex {
   }
 
   const entries: HarEntrySummary[] = [];
-  const documents: DocumentNavigation[] = [];
   let withBodyCount = 0;
 
   entriesRaw.forEach((entry, index) => {
@@ -187,7 +272,10 @@ export function buildHarIndex(raw: unknown): HarIndex {
     const body = hasResponseBody(entry.response?.content);
     if (body) withBodyCount += 1;
 
-    const isDocument = Boolean(url) && looksLikeDocument(entry, mimeType);
+    const isDocument =
+      Boolean(url) &&
+      (isMainFrameDocument(entry) ||
+        looksLikeHtmlNavigation(entry, mimeType));
 
     entries.push({
       index,
@@ -201,25 +289,13 @@ export function buildHarIndex(raw: unknown): HarIndex {
       hasBody: body,
       isDocument,
     });
-
-    if (isDocument && status >= 200 && status < 400) {
-      documents.push({
-        entryIndex: index,
-        pageref: entry.pageref,
-        url,
-        startedDateTime,
-        startedMs,
-        title: pageTitle(pageMap, entry.pageref, url),
-        mimeType,
-        status,
-        hasBody: body,
-      });
-    }
   });
+
+  let finalDocs = buildMainDocuments(entriesRaw, sessionStartMs, pageMap);
 
   // Deduplicate: same URL + pageref within 500ms → keep first
   const deduped: DocumentNavigation[] = [];
-  for (const doc of documents.sort((a, b) => a.startedMs - b.startedMs)) {
+  for (const doc of finalDocs) {
     const prev = deduped[deduped.length - 1];
     if (
       prev &&
@@ -231,9 +307,7 @@ export function buildHarIndex(raw: unknown): HarIndex {
     }
     deduped.push(doc);
   }
-
-  // If HAR has pages but we found no documents, synthesize from pages + first HTML per pageref
-  let finalDocs = deduped;
+  finalDocs = deduped;
   if (finalDocs.length === 0 && pages.length > 0) {
     warnings.push(
       'No document navigations detected from entries; falling back to HAR pages list.',
@@ -299,9 +373,17 @@ export function buildHarIndex(raw: unknown): HarIndex {
     warnings.push('No page navigations found in this HAR.');
   }
 
+  const sourceInfo = detectHarSource(log.creator?.name ?? '');
+  sourceInfo.entryCount = entryCount;
+  sourceInfo.pageCount = pages.length;
+  sourceInfo.withBody = withBodyCount;
+  sourceInfo.bodyCoveragePct = bodyCoveragePct;
+  sourceInfo.hasDocument = finalDocs.length > 0;
+
   return {
     version,
     creator,
+    sourceInfo,
     sessionStartMs,
     pages: pages.map((p) => ({
       ...p,

@@ -1,8 +1,9 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import type {
   CapturePoint,
   CaptureResult,
   HarIndex,
+  HarSourceInfo,
   JobStatus,
   JobSummary,
 } from '@snapshot/core';
@@ -20,6 +21,7 @@ export type JobRecord = {
     message: string;
   };
   harStats?: HarIndex['stats'];
+  harSource?: HarSourceInfo;
   indexWarnings: string[];
   capturePoints: CapturePoint[];
   results: CaptureResult[];
@@ -39,6 +41,7 @@ export function toSummary(job: JobRecord): JobSummary {
     updatedAt: job.updatedAt,
     progress: job.progress,
     harStats: job.harStats,
+    harSource: job.harSource,
     warnings: [...job.indexWarnings, ...job.warnings],
     error: job.error,
   };
@@ -49,9 +52,11 @@ export async function createJob(params: {
   strategyId: string;
   originalFilename: string;
   harBytes: Buffer;
+  harSource?: HarSourceInfo;
 }): Promise<JobRecord> {
   const now = new Date().toISOString();
   await mkdir(screenshotsDir(params.id), { recursive: true });
+  await mkdir(jobDir(params.id), { recursive: true });
   await writeFile(harPath(params.id), params.harBytes);
 
   const job: JobRecord = {
@@ -61,6 +66,7 @@ export async function createJob(params: {
     createdAt: now,
     updatedAt: now,
     progress: { current: 0, total: 0, message: 'Queued' },
+    harSource: params.harSource,
     indexWarnings: [],
     capturePoints: [],
     results: [],
@@ -96,6 +102,7 @@ async function persist(job: JobRecord): Promise<void> {
 
 export async function loadJobFromDisk(id: string): Promise<JobRecord | null> {
   try {
+    const { readFile } = await import('node:fs/promises');
     const text = await readFile(metaPath(id), 'utf8');
     const job = JSON.parse(text) as JobRecord;
     memory.set(id, job);
@@ -103,4 +110,45 @@ export async function loadJobFromDisk(id: string): Promise<JobRecord | null> {
   } catch {
     return null;
   }
+}
+
+/** List recent jobs from memory + disk, newest first. */
+export async function listJobs(limit = 20): Promise<JobSummary[]> {
+  const { readdir } = await import('node:fs/promises');
+  const { JOBS_DIR } = await import('./paths.js');
+
+  let ids: string[] = [];
+  try {
+    ids = await readdir(JOBS_DIR);
+  } catch {
+    ids = [];
+  }
+
+  const seen = new Set<string>();
+  const jobs: JobRecord[] = [];
+
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const fromMem = memory.get(id);
+    if (fromMem) {
+      jobs.push(fromMem);
+      continue;
+    }
+    const fromDisk = await loadJobFromDisk(id);
+    if (fromDisk) jobs.push(fromDisk);
+  }
+
+  for (const [id, job] of memory) {
+    if (seen.has(id)) continue;
+    jobs.push(job);
+  }
+
+  jobs.sort(
+    (a, b) =>
+      Date.parse(b.updatedAt || b.createdAt) -
+      Date.parse(a.updatedAt || a.createdAt),
+  );
+
+  return jobs.slice(0, Math.max(1, limit)).map(toSummary);
 }

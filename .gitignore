@@ -1,6 +1,8 @@
 node_modules/
 dist/
 data/jobs/
+har-screenshots/
+packages/replay/.tmp-integration/
 *.log
 .DS_Store
 .env

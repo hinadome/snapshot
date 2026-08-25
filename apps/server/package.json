@@ -11,8 +11,8 @@
   "dependencies": {
     "@hono/node-server": "^1.14.1",
     "@snapshot/core": "workspace:*",
+    "@snapshot/replay": "workspace:*",
     "hono": "^4.7.5",
-    "playwright": "^1.51.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {

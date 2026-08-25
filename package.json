@@ -7,10 +7,19 @@
     "dev:server": "pnpm --filter @snapshot/server dev",
     "dev:web": "pnpm --filter @snapshot/web dev",
     "build": "pnpm -r build",
-    "test": "pnpm --filter @snapshot/core test",
-    "postinstall": "pnpm --filter @snapshot/server exec playwright install chromium"
+    "replay": "tsx scripts/replay-har.ts",
+    "test": "pnpm --filter @snapshot/core test && pnpm --filter @snapshot/replay test",
+    "postinstall": "pnpm --filter @snapshot/replay exec playwright install chromium"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@snapshot/core": "workspace:*",
+    "@snapshot/replay": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
   }
 }

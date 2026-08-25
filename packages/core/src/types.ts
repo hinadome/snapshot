@@ -12,6 +12,19 @@ export type CapturePoint = {
   waitUntil: WaitUntil;
   kind: CaptureKind;
   pageref?: string;
+  fullPage?: boolean;
+  stage?: 'commit' | 'domcontentloaded' | 'load' | 'networkidle' | 'fullpage' | 'scroll';
+  scrollIndex?: number;
+};
+
+export type HarSourceInfo = {
+  source: string;
+  creatorName: string | null;
+  entryCount: number;
+  pageCount: number;
+  withBody: number;
+  bodyCoveragePct: number;
+  hasDocument: boolean;
 };
 
 export type CaptureResult = {
@@ -74,6 +87,7 @@ export type DocumentNavigation = {
 export type HarIndex = {
   version: string;
   creator?: string;
+  sourceInfo?: HarSourceInfo;
   sessionStartMs: number;
   pages: HarPage[];
   entries: HarEntrySummary[];
@@ -111,6 +125,7 @@ export type JobSummary = {
     message: string;
   };
   harStats?: HarIndex['stats'];
+  harSource?: HarSourceInfo;
   warnings: string[];
   error?: string;
 };
