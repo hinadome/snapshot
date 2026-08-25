@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+# Add Snapshot as an nginx site with HTTPS — without replacing existing sites.
+#
+# Safe behavior:
+#   - Never overwrites /etc/nginx/nginx.conf
+#   - Never edits other files under sites-enabled / conf.d
+#   - Only installs/updates a dedicated Snapshot site file
+#   - Always runs `nginx -t` before reload
+#
+# Usage:
+#   ./deploy/nginx-setup.sh --domain snapshot.example.com
+#   ./deploy/nginx-setup.sh --domain snapshot.example.com --certbot --email ops@example.com
+#   ./deploy/nginx-setup.sh --domain snapshot.example.com --self-signed
+#   ./deploy/nginx-setup.sh --domain snapshot.example.com --cert /path/fullchain.pem --key /path/privkey.pem
+#   ./deploy/nginx-setup.sh --remove
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEMPLATE="${ROOT}/deploy/nginx/snapshot.conf.template"
+SITE_NAME="${SNAPSHOT_NGINX_SITE_NAME:-snapshot}"
+UPSTREAM_HOST="${SNAPSHOT_NGINX_UPSTREAM_HOST:-127.0.0.1}"
+UPSTREAM_PORT="${PORT:-${SNAPSHOT_PORT:-8787}}"
+DOMAIN="${SNAPSHOT_DOMAIN:-}"
+EMAIL="${SNAPSHOT_CERTBOT_EMAIL:-}"
+CERT_PATH="${SNAPSHOT_SSL_CERT:-}"
+KEY_PATH="${SNAPSHOT_SSL_KEY:-}"
+MODE="" # certbot | self-signed | custom
+DO_REMOVE=0
+SKIP_BIND=0
+
+log() { printf '==> %s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+run_root() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+  elif have sudo; then
+    sudo "$@"
+  else
+    die "need root or sudo for: $*"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Snapshot nginx + HTTPS setup (additive — does not break existing sites)
+
+  ./deploy/nginx-setup.sh --domain <hostname> --certbot --email you@example.com
+  ./deploy/nginx-setup.sh --domain <hostname> --self-signed
+  ./deploy/nginx-setup.sh --domain <hostname> --cert fullchain.pem --key privkey.pem
+  ./deploy/nginx-setup.sh --remove
+
+Required:
+  --domain NAME          server_name for this app only (new vhost)
+
+TLS (pick one):
+  --certbot --email E    Let's Encrypt via certbot (nginx plugin)
+  --self-signed          Generate a local cert (browsers will warn)
+  --cert PATH --key PATH Use existing certificate files
+
+Options:
+  --site-name NAME       nginx site id (default: snapshot)
+  --upstream HOST:PORT   app backend (default: 127.0.0.1:8787)
+  --skip-bind            Do not rewrite deploy/snapshot.env HOST=127.0.0.1
+  --remove               Disable and delete only the Snapshot site file
+
+Environment equivalents: SNAPSHOT_DOMAIN, SNAPSHOT_CERTBOT_EMAIL,
+  SNAPSHOT_SSL_CERT, SNAPSHOT_SSL_KEY, PORT / SNAPSHOT_PORT
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --domain) DOMAIN="${2:-}"; shift 2 ;;
+    --email) EMAIL="${2:-}"; shift 2 ;;
+    --certbot) MODE=certbot; shift ;;
+    --self-signed) MODE=self-signed; shift ;;
+    --cert) CERT_PATH="${2:-}"; MODE=custom; shift 2 ;;
+    --key) KEY_PATH="${2:-}"; MODE=custom; shift 2 ;;
+    --site-name) SITE_NAME="${2:-}"; shift 2 ;;
+    --upstream)
+      raw="${2:-}"
+      if [[ "${raw}" == *:* ]]; then
+        UPSTREAM_HOST="${raw%%:*}"
+        UPSTREAM_PORT="${raw##*:}"
+      else
+        UPSTREAM_HOST="${raw}"
+      fi
+      shift 2
+      ;;
+    --skip-bind) SKIP_BIND=1; shift ;;
+    --remove) DO_REMOVE=1; shift ;;
+    *) die "unknown option: $1 (see --help)" ;;
+  esac
+done
+
+detect_nginx_layout() {
+  # Prefer Debian/Ubuntu sites-available so we never touch other enabled sites.
+  if [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]]; then
+    SITE_AVAILABLE="/etc/nginx/sites-available/${SITE_NAME}"
+    SITE_ENABLED="/etc/nginx/sites-enabled/${SITE_NAME}"
+    LAYOUT=debian
+  elif [[ -d /etc/nginx/conf.d ]]; then
+    SITE_AVAILABLE="/etc/nginx/conf.d/${SITE_NAME}.conf"
+    SITE_ENABLED=""
+    LAYOUT=confd
+  else
+    die "nginx config dirs not found (/etc/nginx/sites-available or conf.d). Is nginx installed?"
+  fi
+}
+
+ensure_nginx_installed() {
+  if have nginx; then
+    log "nginx $(nginx -v 2>&1 | head -1) present"
+    return
+  fi
+  log "nginx not found — installing"
+  if have apt-get; then
+    run_root apt-get update -y
+    run_root apt-get install -y nginx
+  elif have dnf; then
+    run_root dnf install -y nginx
+  elif have yum; then
+    run_root yum install -y nginx
+  else
+    die "cannot install nginx automatically; install it and re-run"
+  fi
+}
+
+ensure_nginx_running() {
+  if have systemctl; then
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+      log "nginx is already running (existing sites left untouched)"
+    else
+      log "starting nginx"
+      run_root systemctl enable --now nginx
+    fi
+  else
+    warn "systemctl unavailable — ensure nginx is running yourself"
+  fi
+}
+
+nginx_test_and_reload() {
+  log "Validating nginx config (nginx -t)"
+  if ! run_root nginx -t; then
+    die "nginx -t failed — Snapshot site NOT enabled; existing sites unchanged"
+  fi
+  log "Reloading nginx"
+  if have systemctl; then
+    run_root systemctl reload nginx
+  else
+    run_root nginx -s reload
+  fi
+}
+
+remove_site() {
+  detect_nginx_layout
+  log "Removing Snapshot nginx site only (${SITE_NAME})"
+  if [[ "${LAYOUT}" == "debian" ]]; then
+    run_root rm -f "${SITE_ENABLED}"
+    run_root rm -f "${SITE_AVAILABLE}"
+  else
+    run_root rm -f "${SITE_AVAILABLE}"
+  fi
+  if have nginx; then
+    nginx_test_and_reload || warn "reload after remove failed"
+  fi
+  log "Done. Other nginx sites were not modified."
+}
+
+render_site() {
+  local cert="$1" key="$2" out="$3"
+  [[ -f "${TEMPLATE}" ]] || die "missing template ${TEMPLATE}"
+  sed \
+    -e "s|__SERVER_NAME__|${DOMAIN}|g" \
+    -e "s|__UPSTREAM__|${UPSTREAM_HOST}:${UPSTREAM_PORT}|g" \
+    -e "s|__SSL_CERT__|${cert}|g" \
+    -e "s|__SSL_KEY__|${key}|g" \
+    "${TEMPLATE}" > "${out}"
+}
+
+install_site_file() {
+  local rendered="$1"
+  detect_nginx_layout
+  log "Installing site file ${SITE_AVAILABLE} (additive)"
+  run_root cp "${rendered}" "${SITE_AVAILABLE}"
+  if [[ "${LAYOUT}" == "debian" ]]; then
+    # Symlink enable — do not remove or alter other links in sites-enabled
+    run_root ln -sfn "${SITE_AVAILABLE}" "${SITE_ENABLED}"
+  fi
+}
+
+bind_app_localhost() {
+  [[ "${SKIP_BIND}" -eq 1 ]] && return
+  local env_path="${ROOT}/deploy/snapshot.env"
+  if [[ ! -f "${env_path}" ]]; then
+    warn "no ${env_path} yet — create it via ./deploy/vm-deploy.sh first"
+    warn "set HOST=127.0.0.1 so Snapshot is not exposed on the public interface"
+    return
+  fi
+  if grep -q '^HOST=' "${env_path}"; then
+    sed -i.bak 's|^HOST=.*|HOST=127.0.0.1|' "${env_path}"
+    rm -f "${env_path}.bak"
+  else
+    printf '\nHOST=127.0.0.1\n' >> "${env_path}"
+  fi
+  # Prefer same-origin CORS when behind the public hostname
+  if grep -q '^SNAPSHOT_CORS_ORIGINS=' "${env_path}"; then
+    sed -i.bak "s|^SNAPSHOT_CORS_ORIGINS=.*|SNAPSHOT_CORS_ORIGINS=https://${DOMAIN}|" "${env_path}"
+    rm -f "${env_path}.bak"
+  else
+    printf 'SNAPSHOT_CORS_ORIGINS=https://%s\n' "${DOMAIN}" >> "${env_path}"
+  fi
+  log "Updated ${env_path}: HOST=127.0.0.1 (app only reachable via nginx)"
+
+  if have systemctl && systemctl cat snapshot.service &>/dev/null; then
+    log "Restarting snapshot so bind address takes effect"
+    run_root systemctl restart snapshot.service || warn "could not restart snapshot.service"
+  else
+    warn "restart Snapshot yourself so it listens on 127.0.0.1:${UPSTREAM_PORT}"
+  fi
+}
+
+ensure_self_signed() {
+  local dir="/etc/nginx/ssl/snapshot"
+  CERT_PATH="${dir}/fullchain.pem"
+  KEY_PATH="${dir}/privkey.pem"
+  if [[ -f "${CERT_PATH}" && -f "${KEY_PATH}" ]]; then
+    log "Reusing self-signed cert at ${CERT_PATH}"
+    return
+  fi
+  log "Generating self-signed certificate for ${DOMAIN}"
+  run_root mkdir -p "${dir}"
+  if run_root openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+    -keyout "${KEY_PATH}" \
+    -out "${CERT_PATH}" \
+    -subj "/CN=${DOMAIN}" \
+    -addext "subjectAltName=DNS:${DOMAIN}" 2>/dev/null; then
+    return
+  fi
+  run_root openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+    -keyout "${KEY_PATH}" \
+    -out "${CERT_PATH}" \
+    -subj "/CN=${DOMAIN}"
+}
+
+run_certbot() {
+  [[ -n "${EMAIL}" ]] || die "--certbot requires --email"
+  if ! have certbot; then
+    log "Installing certbot"
+    if have apt-get; then
+      run_root apt-get update -y
+      run_root apt-get install -y certbot python3-certbot-nginx
+    elif have dnf; then
+      run_root dnf install -y certbot python3-certbot-nginx
+    else
+      die "install certbot + python3-certbot-nginx, then re-run"
+    fi
+  fi
+
+  # First install with a temporary self-signed so nginx -t succeeds, then certbot replaces certs.
+  ensure_self_signed
+  local tmp
+  tmp="$(mktemp)"
+  render_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
+  install_site_file "${tmp}"
+  rm -f "${tmp}"
+  nginx_test_and_reload
+
+  log "Requesting Let's Encrypt certificate for ${DOMAIN}"
+  run_root certbot --nginx \
+    -d "${DOMAIN}" \
+    --email "${EMAIL}" \
+    --agree-tos \
+    --non-interactive \
+    --redirect \
+    --keep-until-expiring
+
+  # Certbot may rewrite our server block; that is OK and still isolated to this server_name.
+  CERT_PATH="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+  KEY_PATH="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+  nginx_test_and_reload
+}
+
+# --- main ---
+
+if [[ "${DO_REMOVE}" -eq 1 ]]; then
+  remove_site
+  exit 0
+fi
+
+[[ -n "${DOMAIN}" ]] || die "--domain is required (dedicated server_name; keeps other apps intact)"
+[[ -f "${TEMPLATE}" ]] || die "missing ${TEMPLATE}"
+
+if [[ -z "${MODE}" ]]; then
+  if [[ -n "${CERT_PATH}" || -n "${KEY_PATH}" ]]; then
+    MODE=custom
+  else
+    MODE=self-signed
+    warn "No TLS mode given — defaulting to --self-signed (use --certbot for real HTTPS)"
+  fi
+fi
+
+ensure_nginx_installed
+ensure_nginx_running
+detect_nginx_layout
+
+case "${MODE}" in
+  certbot)
+    run_certbot
+    ;;
+  self-signed)
+    ensure_self_signed
+    tmp="$(mktemp)"
+    render_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
+    install_site_file "${tmp}"
+    rm -f "${tmp}"
+    nginx_test_and_reload
+    ;;
+  custom)
+    [[ -n "${CERT_PATH}" && -n "${KEY_PATH}" ]] || die "--cert and --key required"
+    [[ -f "${CERT_PATH}" ]] || die "cert not found: ${CERT_PATH}"
+    [[ -f "${KEY_PATH}" ]] || die "key not found: ${KEY_PATH}"
+    tmp="$(mktemp)"
+    render_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
+    install_site_file "${tmp}"
+    rm -f "${tmp}"
+    nginx_test_and_reload
+    ;;
+  *)
+    die "unknown TLS mode: ${MODE}"
+    ;;
+esac
+
+bind_app_localhost
+
+echo
+echo "Snapshot nginx vhost installed for server_name=${DOMAIN}"
+echo "  Layout:     ${LAYOUT}"
+echo "  Site file:  ${SITE_AVAILABLE}"
+echo "  Upstream:   ${UPSTREAM_HOST}:${UPSTREAM_PORT}"
+echo "  URL:        https://${DOMAIN}/"
+echo "  Health:     https://${DOMAIN}/api/health"
+echo
+echo "Existing nginx sites were not modified."
+echo "Ensure DNS for ${DOMAIN} points at this VM, and open ports 80/443."
+if [[ "${MODE}" == "self-signed" ]]; then
+  echo "Browsers will warn on the self-signed cert until you switch to --certbot or --cert/--key."
+fi

@@ -17,17 +17,24 @@ import {
   listJobs,
   toSummary,
 } from './job-store.js';
-import { harPath, screenshotFile } from './paths.js';
+import { harPath, screenshotFile, corsOrigins } from './paths.js';
 import { enqueueJob } from './worker.js';
+import { mountWebStatic } from './static-web.js';
 
 registerBuiltInStrategies();
 
 export const app = new Hono();
 
+const origins = corsOrigins();
 app.use(
   '*',
   cors({
-    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin:
+      origins === '*'
+        ? (origin) => origin || '*'
+        : origins.length
+          ? origins
+          : ['http://localhost:5173', 'http://127.0.0.1:5173'],
   }),
 );
 
@@ -260,3 +267,6 @@ app.get('/api/jobs/:id/screenshots/:file', async (c) => {
     return c.json({ error: 'Screenshot not found' }, 404);
   }
 });
+
+// Same-origin UI for production (VM / container). Keep after /api routes.
+mountWebStatic(app);

@@ -10,6 +10,21 @@ export const DATA_DIR = process.env.SNAPSHOT_DATA_DIR ?? join(ROOT_DIR, 'data');
 export const JOBS_DIR = join(DATA_DIR, 'jobs');
 export const PORT = Number(process.env.PORT ?? 8787);
 
+/** Bind address. Use 127.0.0.1 when nginx terminates TLS in front. */
+export const HOST = process.env.HOST ?? process.env.SNAPSHOT_HOST ?? '0.0.0.0';
+
+
+/** Built web UI (`apps/web/dist`). Set SNAPSHOT_WEB_DIST to override. */
+export const WEB_DIST_DIR =
+  process.env.SNAPSHOT_WEB_DIST ?? join(ROOT_DIR, 'apps/web/dist');
+
+/** Comma-separated CORS origins. Empty = reflect request origin (same-host prod OK). */
+export function corsOrigins(): string[] | '*' {
+  const raw = process.env.SNAPSHOT_CORS_ORIGINS?.trim();
+  if (!raw || raw === '*') return '*';
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 /** Kept after a successful job; everything else in the job dir is upload input. */
 export const JOB_KEEP_NAMES = new Set(['job.json', 'screenshots']);
 

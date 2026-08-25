@@ -8,7 +8,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/). Versioning foll
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- Production deploy: `deploy/vm-deploy.sh` (VM + systemd), `deploy/container-deploy.sh` (Docker Compose), `deploy/Dockerfile`, and [DEPLOYMENT.md](DEPLOYMENT.md)
+- API serves built web UI on the same port in production (`SNAPSHOT_WEB_DIST`); configurable `HOST` bind (`127.0.0.1` behind nginx)
+- Configurable CORS via `SNAPSHOT_CORS_ORIGINS`
+- nginx HTTPS front: `deploy/nginx-setup.sh` + site template — **additive** vhost only (does not overwrite existing nginx apps); Let's Encrypt, self-signed, or custom certs
+- Container parity: `--host-nginx` (localhost publish + host nginx) and `--nginx` (Docker TLS sidecar); Compose `init`, `mem_limit`, `SNAPSHOT_BIND`
 
 ---
 

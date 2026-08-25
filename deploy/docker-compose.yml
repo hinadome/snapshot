@@ -1,0 +1,61 @@
+# Snapshot — base Compose service (app only)
+# Usage (from monorepo root):
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Production on a VM that already has nginx (recommended):
+#   ./deploy/container-deploy.sh --host-nginx --domain snapshot.example.com --certbot --email you@example.com
+#   → publishes 127.0.0.1:8787 only; host nginx terminates TLS (same as VM script)
+#
+# Self-contained Docker TLS (no host nginx):
+#   ./deploy/container-deploy.sh --nginx --domain snapshot.example.com --self-signed
+
+services:
+  snapshot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        PLAYWRIGHT_VERSION: "1.62.1"
+    image: ${SNAPSHOT_IMAGE:-snapshot:latest}
+    container_name: snapshot
+    ports:
+      # Override bind with SNAPSHOT_BIND=127.0.0.1 for host-nginx / private deploy
+      - "${SNAPSHOT_BIND:-0.0.0.0}:${SNAPSHOT_PORT:-8787}:8787"
+    environment:
+      PORT: "8787"
+      HOST: "0.0.0.0"
+      SNAPSHOT_DATA_DIR: /data
+      SNAPSHOT_WEB_DIST: /app/apps/web/dist
+      SNAPSHOT_CORS_ORIGINS: ${SNAPSHOT_CORS_ORIGINS:-*}
+      NODE_ENV: production
+    volumes:
+      - snapshot-data:/data
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    # Chromium is memory-heavy; raise via SNAPSHOT_MEM_LIMIT if needed
+    mem_limit: ${SNAPSHOT_MEM_LIMIT:-2g}
+    memswap_limit: ${SNAPSHOT_MEM_LIMIT:-2g}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    networks:
+      - snapshot_net
+
+networks:
+  snapshot_net:
+    name: snapshot_net
+    driver: bridge
+
+volumes:
+  snapshot-data:
+    name: snapshot-data

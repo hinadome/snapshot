@@ -9,6 +9,8 @@
     "build": "pnpm -r build",
     "replay": "tsx scripts/replay-har.ts",
     "test": "pnpm --filter @snapshot/core test && pnpm --filter @snapshot/replay test",
+    "deploy:vm": "./deploy/vm-deploy.sh",
+    "deploy:container": "./deploy/container-deploy.sh",
     "postinstall": "pnpm --filter @snapshot/replay exec playwright install chromium"
   },
   "engines": {

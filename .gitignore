@@ -3,6 +3,9 @@ dist/
 data/jobs/
 har-screenshots/
 packages/replay/.tmp-integration/
+deploy/snapshot.env
+deploy/nginx/docker/certs/*.pem
+deploy/nginx/docker/default.conf
 *.log
 .DS_Store
 .env

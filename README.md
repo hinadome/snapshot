@@ -17,7 +17,14 @@ Nothing leaves your machine: HARs and PNGs stay under `data/`. Playwright runs l
 
 ```bash
 pnpm install   # also installs Chromium for Playwright
-pnpm dev       # web + API
+pnpm dev       # web + API (dev)
+```
+
+**Production** (single port UI + API) — see [DEPLOYMENT.md](DEPLOYMENT.md):
+
+```bash
+./deploy/container-deploy.sh --host-nginx --domain snapshot.example.com --certbot --email you@example.com
+./deploy/vm-deploy.sh --nginx --domain snapshot.example.com --certbot --email you@example.com
 ```
 
 1. Open the UI  
@@ -259,6 +266,7 @@ Job **warnings** list requests that could not be served from the HAR. A few anal
 |-----|---------|
 | [CHANGELOG.md](CHANGELOG.md) | What shipped in each version |
 | [IMPLEMENT.md](IMPLEMENT.md) | Phase-by-phase build checklist |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | VM + Docker deploy scripts and ops guide |
 
 ---
 

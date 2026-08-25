@@ -1,0 +1,23 @@
+[Unit]
+Description=Snapshot HAR reconstruction (UI + API)
+Documentation=file://@ROOT@/DEPLOYMENT.md
+After=network.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@ROOT@
+EnvironmentFile=@ROOT@/deploy/snapshot.env
+ExecStart=@NODE@ @ROOT@/apps/server/dist/index.js
+Restart=on-failure
+RestartSec=5
+# Chromium / Playwright
+LimitNOFILE=65535
+
+# Hardening (relax if capture fails on your distro)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

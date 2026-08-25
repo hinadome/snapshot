@@ -1,0 +1,23 @@
+# Optional: include inside an *existing* HTTPS server{} if you cannot use a
+# dedicated server_name. Copy the location blocks manually — nginx-setup.sh
+# does NOT auto-edit other site files (avoids breaking existing apps).
+#
+# Example inside your current site:
+#   include /etc/nginx/snippets/snapshot-location.conf;
+#
+# Upstream must already be defined (see snapshot.conf.template) or add:
+#   upstream snapshot_backend { server 127.0.0.1:8787; keepalive 8; }
+
+location / {
+    # WARNING: only use this include if this server{} is dedicated to Snapshot.
+    # For a shared vhost, prefer a path prefix and change the app base path,
+    # or use a separate server_name via nginx-setup.sh (recommended).
+    proxy_pass http://snapshot_backend;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    client_max_body_size 200m;
+    proxy_read_timeout 300s;
+}
