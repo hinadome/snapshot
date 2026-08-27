@@ -3,6 +3,7 @@
 #
 # Usage (from monorepo root, as a user that can write the repo + optionally sudo):
 #   ./deploy/vm-deploy.sh
+#   ./deploy/vm-deploy.sh --nginx --domain snapshot.example.com --http
 #   ./deploy/vm-deploy.sh --nginx --domain snapshot.example.com --certbot --email ops@example.com
 #   ./deploy/vm-deploy.sh --build-only
 #   ./deploy/vm-deploy.sh --foreground
@@ -23,7 +24,7 @@ ENSURE_NODE_LIB="${ROOT}/deploy/lib/ensure-node.sh"
 WITH_NGINX=0
 NGINX_DOMAIN="${SNAPSHOT_DOMAIN:-}"
 NGINX_EMAIL="${SNAPSHOT_CERTBOT_EMAIL:-}"
-NGINX_TLS="" # certbot | self-signed | custom
+NGINX_TLS="" # http | certbot | self-signed | custom
 NGINX_CERT="${SNAPSHOT_SSL_CERT:-}"
 NGINX_KEY="${SNAPSHOT_SSL_KEY:-}"
 
@@ -34,8 +35,10 @@ usage() {
 Snapshot VM deploy
 
   ./deploy/vm-deploy.sh                  Install, build, enable systemd
+  ./deploy/vm-deploy.sh --nginx --domain NAME --http
+                                         Same + nginx HTTP front on port 80
   ./deploy/vm-deploy.sh --nginx --domain NAME [--certbot --email E | --self-signed]
-                                         Same + add nginx HTTPS vhost (keeps other sites)
+                                         Same + nginx HTTPS vhost (keeps other sites)
   ./deploy/vm-deploy.sh --build-only
   ./deploy/vm-deploy.sh --start | --stop | --status
   ./deploy/vm-deploy.sh --foreground
@@ -86,6 +89,7 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
       i=$((i + 1))
       NGINX_EMAIL="${ARGS[$i]:-}"
       ;;
+    --http) NGINX_TLS=http; WITH_NGINX=1 ;;
     --certbot) NGINX_TLS=certbot; WITH_NGINX=1 ;;
     --self-signed) NGINX_TLS=self-signed; WITH_NGINX=1 ;;
     --cert)
@@ -185,7 +189,11 @@ write_env_file() {
   if [[ "${WITH_NGINX}" -eq 1 ]]; then
     bind_host="127.0.0.1"
     if [[ -n "${NGINX_DOMAIN}" ]]; then
-      cors="https://${NGINX_DOMAIN}"
+      if [[ "${NGINX_TLS}" == "http" ]]; then
+        cors="http://${NGINX_DOMAIN}"
+      else
+        cors="https://${NGINX_DOMAIN}"
+      fi
     fi
   fi
   cat > "${env_path}" <<EOF
@@ -243,6 +251,9 @@ setup_nginx() {
 
   local args=(--domain "${NGINX_DOMAIN}")
   case "${NGINX_TLS}" in
+    http)
+      args+=(--http)
+      ;;
     certbot)
       [[ -n "${NGINX_EMAIL}" ]] || die "--certbot requires --email"
       args+=(--certbot --email "${NGINX_EMAIL}")
@@ -255,13 +266,17 @@ setup_nginx() {
       args+=(--self-signed)
       ;;
     *)
-      die "unknown TLS mode: ${NGINX_TLS}"
+      die "unknown nginx mode: ${NGINX_TLS}"
       ;;
   esac
   args+=(--upstream "127.0.0.1:${PORT}")
 
   chmod +x "${ROOT}/deploy/nginx-setup.sh"
-  log "Configuring nginx HTTPS front for ${NGINX_DOMAIN} (existing sites untouched)"
+  if [[ "${NGINX_TLS}" == "http" ]]; then
+    log "Configuring nginx HTTP front for ${NGINX_DOMAIN} (existing sites untouched)"
+  else
+    log "Configuring nginx HTTPS front for ${NGINX_DOMAIN} (existing sites untouched)"
+  fi
   "${ROOT}/deploy/nginx-setup.sh" "${args[@]}"
 }
 
@@ -291,7 +306,11 @@ cmd_status() {
   curl -sf "http://127.0.0.1:${PORT}/api/health" && echo " app health: ok" || echo "app health: unreachable"
   local d="${NGINX_DOMAIN:-${SNAPSHOT_DOMAIN:-}}"
   if [[ -n "${d}" ]]; then
-    curl -skf "https://${d}/api/health" && echo " nginx https health: ok" || echo "nginx https health: unreachable"
+    if [[ "${NGINX_TLS}" == "http" ]]; then
+      curl -sf "http://${d}/api/health" && echo " nginx http health: ok" || echo "nginx http health: unreachable"
+    else
+      curl -skf "https://${d}/api/health" && echo " nginx https health: ok" || echo "nginx https health: unreachable"
+    fi
   fi
 }
 
@@ -340,13 +359,19 @@ case "${ACTION}" in
       setup_nginx
       echo
       if [[ "${WITH_NGINX}" -eq 1 ]]; then
-        echo "UI + API (HTTPS):  https://${NGINX_DOMAIN}/"
-        echo "Health:            https://${NGINX_DOMAIN}/api/health"
+        if [[ "${NGINX_TLS}" == "http" ]]; then
+          echo "UI + API (HTTP):   http://${NGINX_DOMAIN}/"
+          echo "Health:            http://${NGINX_DOMAIN}/api/health"
+        else
+          echo "UI + API (HTTPS):  https://${NGINX_DOMAIN}/"
+          echo "Health:            https://${NGINX_DOMAIN}/api/health"
+        fi
         echo "App (localhost):   http://127.0.0.1:${PORT}/api/health"
       else
         echo "UI + API:  http://localhost:${PORT}"
         echo "Health:    http://localhost:${PORT}/api/health"
-        echo "Tip: add HTTPS with:"
+        echo "Tip: add nginx with:"
+        echo "  ./deploy/nginx-setup.sh --domain snapshot.example.com --http"
         echo "  ./deploy/nginx-setup.sh --domain snapshot.example.com --certbot --email you@example.com"
       fi
       echo "Status:    ./deploy/vm-deploy.sh --status"

@@ -9,10 +9,12 @@ This guide covers running **Snapshot** (web UI + API + Playwright capture) on a 
 | [`deploy/vm-deploy.sh`](deploy/vm-deploy.sh) | Install, build, systemd; optional `--nginx` HTTPS |
 | [`deploy/lib/ensure-node.sh`](deploy/lib/ensure-node.sh) | Node.js version check + auto-install (sourced by VM script) |
 | [`deploy/nginx-setup.sh`](deploy/nginx-setup.sh) | Add Snapshot nginx vhost + TLS (does not touch other sites) |
-| [`deploy/nginx/snapshot.conf.template`](deploy/nginx/snapshot.conf.template) | Host nginx `server{}` template |
-| [`deploy/container-deploy.sh`](deploy/container-deploy.sh) | Docker deploy; `--host-nginx` / `--nginx` HTTPS modes |
+| [`deploy/nginx/snapshot.conf.template`](deploy/nginx/snapshot.conf.template) | Host nginx HTTPS `server{}` template |
+| [`deploy/nginx/snapshot-http.conf.template`](deploy/nginx/snapshot-http.conf.template) | Host nginx HTTP-only `server{}` template |
+| [`deploy/container-deploy.sh`](deploy/container-deploy.sh) | Docker deploy; `--host-nginx` / `--nginx` HTTP or HTTPS |
 | [`deploy/docker-compose.yml`](deploy/docker-compose.yml) | App-only Compose (optional localhost bind) |
-| [`deploy/docker-compose.nginx.yml`](deploy/docker-compose.nginx.yml) | App + Docker nginx TLS stack |
+| [`deploy/docker-compose.nginx.yml`](deploy/docker-compose.nginx.yml) | App + Docker nginx HTTPS stack |
+| [`deploy/docker-compose.nginx-http.yml`](deploy/docker-compose.nginx-http.yml) | App + Docker nginx HTTP-only stack |
 | [`deploy/Dockerfile`](deploy/Dockerfile) | Multi-stage image (Playwright base + Snapshot) |
 | [`deploy/docker-entrypoint.sh`](deploy/docker-entrypoint.sh) | Container entrypoint (`/data` permissions + start) |
 | [`deploy/systemd/snapshot.service`](deploy/systemd/snapshot.service) | systemd unit template |
@@ -52,7 +54,13 @@ From the monorepo root on the target machine (repo already cloned). Prefer a **d
 ```bash
 chmod +x deploy/vm-deploy.sh deploy/nginx-setup.sh
 
-# Full deploy + Let's Encrypt (recommended)
+# HTTP only (lab / private network — port 80)
+./deploy/vm-deploy.sh \
+  --nginx \
+  --domain snapshot.example.com \
+  --http
+
+# Full deploy + Let's Encrypt HTTPS (recommended for public)
 ./deploy/vm-deploy.sh \
   --nginx \
   --domain snapshot.example.com \
@@ -153,13 +161,22 @@ Remove only the Snapshot site:
 ./deploy/nginx-setup.sh --remove
 ```
 
-#### TLS options (`nginx-setup.sh` / `vm-deploy.sh`)
+#### TLS / HTTP options (`nginx-setup.sh` / `vm-deploy.sh`)
 
 | Mode | Flags | When |
 |------|-------|------|
+| **HTTP only** | `--http` | Lab / private network; nginx on port **80** only (no TLS) |
 | Let's Encrypt | `--certbot --email you@example.com` | Public DNS pointing at the VM |
-| Self-signed | `--self-signed` | Lab / private network |
+| Self-signed | `--self-signed` | Lab HTTPS (browsers warn) |
 | Existing certs | `--cert fullchain.pem --key privkey.pem` | Corporate / already issued |
+
+HTTP example (app already running):
+
+```bash
+./deploy/nginx-setup.sh --domain snapshot.example.com --http
+```
+
+Then open `http://snapshot.example.com/` (open firewall port **80**).
 
 #### Without nginx (HTTP on 8787)
 
@@ -184,8 +201,9 @@ journalctl -u snapshot -f
 | Flag | Behavior |
 |------|----------|
 | *(default)* | Install → build → systemd; optional nginx if `--nginx` / `--domain` |
-| `--nginx --domain NAME` | After app start, configure HTTPS front |
-| `--certbot --email E` | Let's Encrypt |
+| `--nginx --domain NAME` | After app start, configure nginx front |
+| `--http` | nginx **HTTP** only (port 80) |
+| `--certbot --email E` | Let's Encrypt HTTPS |
 | `--self-signed` | Local TLS cert |
 | `--cert` / `--key` | Custom certificate files |
 | `--build-only` | Dependencies + Playwright + compile only |
@@ -213,7 +231,14 @@ Generated file (gitignored): `deploy/snapshot.env` — loaded by systemd via `En
 
 #### Firewall
 
-With nginx HTTPS:
+With nginx **HTTP**:
+
+```bash
+sudo ufw allow 80/tcp
+# Do NOT expose 8787 publicly when HOST=127.0.0.1
+```
+
+With nginx **HTTPS**:
 
 ```bash
 sudo ufw allow 80/tcp
@@ -234,6 +259,7 @@ sudo ufw allow 8787/tcp
 ```bash
 ./deploy/nginx-setup.sh --help
 
+./deploy/nginx-setup.sh --domain snapshot.example.com --http
 ./deploy/nginx-setup.sh --domain snapshot.example.com --certbot --email ops@example.com
 ./deploy/nginx-setup.sh --domain snapshot.example.com --self-signed
 ./deploy/nginx-setup.sh --domain snapshot.example.com \
@@ -243,11 +269,12 @@ sudo ufw allow 8787/tcp
 ./deploy/nginx-setup.sh --remove
 ```
 
-Proxy settings in the template:
+Proxy settings in the templates:
 
 - `client_max_body_size 200m` (HAR uploads)
 - `proxy_read_timeout 300s`
-- HTTP → HTTPS redirect + ACME `/.well-known/acme-challenge/`
+- **HTTP mode (`--http`):** listen **80** only, reverse-proxy to the app
+- **HTTPS modes:** HTTP → HTTPS redirect + ACME `/.well-known/acme-challenge/`
 
 If you **must** share an existing HTTPS `server{}` (not recommended), see [`deploy/nginx/snapshot-location.conf.example`](deploy/nginx/snapshot-location.conf.example) — that path is **manual**; the script will not edit your other site files.
 
@@ -259,17 +286,26 @@ Pick a mode based on whether the **host already runs nginx** (same rule as the V
 
 | Mode | When | Command |
 |------|------|---------|
-| **Host nginx** (recommended on VMs) | nginx already on the VM | `--host-nginx --domain …` |
-| **Docker nginx** | No host nginx / pure Docker host | `--nginx --domain … --self-signed` |
+| **Host nginx HTTP** | nginx already on the VM; no TLS yet | `--host-nginx --domain … --http` |
+| **Host nginx HTTPS** | nginx already on the VM | `--host-nginx --domain … --certbot` |
+| **Docker nginx HTTP** | No host nginx; HTTP only | `--nginx --domain … --http` |
+| **Docker nginx HTTPS** | No host nginx / pure Docker host | `--nginx --domain … --self-signed` |
 | **Simple HTTP** | Lab / VPN only | default (publishes `:8787`) |
 
-#### 2a. Recommended: container + existing host nginx (no port clash)
+#### 2a. Recommended: container + existing host nginx
 
-Publishes the app only on **127.0.0.1:8787**, then adds an **additive** host nginx vhost (same `nginx-setup.sh` as VM deploy — does not break other sites):
+**HTTP:**
 
 ```bash
-chmod +x deploy/container-deploy.sh deploy/nginx-setup.sh
+./deploy/container-deploy.sh \
+  --host-nginx \
+  --domain snapshot.example.com \
+  --http
+```
 
+**HTTPS (Let's Encrypt):**
+
+```bash
 ./deploy/container-deploy.sh \
   --host-nginx \
   --domain snapshot.example.com \
@@ -277,12 +313,24 @@ chmod +x deploy/container-deploy.sh deploy/nginx-setup.sh
   --email ops@example.com
 ```
 
-- UI: `https://snapshot.example.com/`
+- UI (HTTP): `http://snapshot.example.com/`
+- UI (HTTPS): `https://snapshot.example.com/`
 - App direct: `http://127.0.0.1:8787/api/health` (localhost only)
 
-#### 2b. Self-contained Docker nginx (80/443 in Compose)
+#### 2b. Self-contained Docker nginx
 
-Use when the host does **not** already bind 80/443:
+**HTTP** (host port 80 only):
+
+```bash
+./deploy/container-deploy.sh \
+  --nginx \
+  --domain snapshot.example.com \
+  --http
+```
+
+Uses [`deploy/docker-compose.nginx-http.yml`](deploy/docker-compose.nginx-http.yml).
+
+**HTTPS** (host ports 80/443):
 
 ```bash
 ./deploy/container-deploy.sh \
@@ -291,9 +339,9 @@ Use when the host does **not** already bind 80/443:
   --self-signed
 ```
 
-Uses [`deploy/docker-compose.nginx.yml`](deploy/docker-compose.nginx.yml): Snapshot is not published on the host; only nginx exposes 80/443.
+Uses [`deploy/docker-compose.nginx.yml`](deploy/docker-compose.nginx.yml).
 
-**Do not** combine `--nginx` with an existing host nginx on the same ports — prefer `--host-nginx` instead.
+**Do not** combine Docker `--nginx` with an existing host nginx on the same ports — prefer `--host-nginx` instead.
 
 #### 2c. Simple HTTP (no TLS)
 
@@ -326,8 +374,9 @@ Useful commands:
 | Flag | Behavior |
 |------|----------|
 | *(default)* | Build + start HTTP on `SNAPSHOT_PORT` |
-| `--host-nginx --domain NAME` | Localhost publish + host nginx HTTPS (keeps other sites) |
-| `--nginx --domain NAME` | Docker nginx sidecar on 80/443 |
+| `--host-nginx --domain NAME` | Localhost publish + host nginx |
+| `--nginx --domain NAME` | Docker nginx sidecar |
+| `--http` | HTTP only (port 80; no TLS) |
 | `--certbot --email E` | Let's Encrypt (**host-nginx** only) |
 | `--self-signed` / `--cert` `--key` | TLS material |
 | `--build-only` / `--up` / `--down` / `--logs` / `--status` | Lifecycle |

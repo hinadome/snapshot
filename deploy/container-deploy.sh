@@ -17,6 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_BASE="${ROOT}/deploy/docker-compose.yml"
 COMPOSE_NGINX_STACK="${ROOT}/deploy/docker-compose.nginx.yml"
+COMPOSE_NGINX_HTTP_STACK="${ROOT}/deploy/docker-compose.nginx-http.yml"
 IMAGE="${SNAPSHOT_IMAGE:-snapshot:latest}"
 PORT="${SNAPSHOT_PORT:-8787}"
 BIND="${SNAPSHOT_BIND:-0.0.0.0}"
@@ -25,7 +26,7 @@ MEM_LIMIT="${SNAPSHOT_MEM_LIMIT:-2g}"
 MODE=simple # simple | host-nginx | docker-nginx
 DOMAIN="${SNAPSHOT_DOMAIN:-}"
 EMAIL="${SNAPSHOT_CERTBOT_EMAIL:-}"
-TLS_MODE="" # certbot | self-signed | custom
+TLS_MODE="" # http | certbot | self-signed | custom
 SSL_CERT="${SNAPSHOT_SSL_CERT:-}"
 SSL_KEY="${SNAPSHOT_SSL_KEY:-}"
 
@@ -38,10 +39,16 @@ Snapshot container deploy
   ./deploy/container-deploy.sh
       Build + start app (HTTP on SNAPSHOT_PORT, default 8787)
 
+  ./deploy/container-deploy.sh --host-nginx --domain NAME --http
+      Host nginx HTTP only (port 80); app on 127.0.0.1:8787
+
   ./deploy/container-deploy.sh --host-nginx --domain NAME [--certbot --email E | --self-signed]
       Recommended on a VM that already runs nginx:
       - App published only on 127.0.0.1:8787
       - Host nginx vhost + HTTPS via deploy/nginx-setup.sh (other sites untouched)
+
+  ./deploy/container-deploy.sh --nginx --domain NAME --http
+      Docker nginx HTTP sidecar (host port 80 only)
 
   ./deploy/container-deploy.sh --nginx --domain NAME [--self-signed | --cert/--key]
       Self-contained Docker nginx sidecar (host ports 80/443).
@@ -79,6 +86,7 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
     --deploy) ACTION=deploy ;;
     --host-nginx) MODE=host-nginx ;;
     --nginx) MODE=docker-nginx ;;
+    --http) TLS_MODE=http ;;
     --domain)
       i=$((i + 1))
       DOMAIN="${ARGS[$i]:-}"
@@ -126,14 +134,22 @@ compose_env() {
   export SNAPSHOT_MEM_LIMIT="${MEM_LIMIT}"
   export SNAPSHOT_CORS_ORIGINS="${SNAPSHOT_CORS_ORIGINS:-*}"
   if [[ -n "${DOMAIN}" && "${SNAPSHOT_CORS_ORIGINS:-*}" == "*" ]]; then
-    export SNAPSHOT_CORS_ORIGINS="https://${DOMAIN}"
+    if [[ "${TLS_MODE}" == "http" ]]; then
+      export SNAPSHOT_CORS_ORIGINS="http://${DOMAIN}"
+    else
+      export SNAPSHOT_CORS_ORIGINS="https://${DOMAIN}"
+    fi
   fi
 }
 
 compose() {
   compose_env
   if [[ "${MODE}" == "docker-nginx" ]]; then
-    "${COMPOSE_BIN[@]}" -f "${COMPOSE_NGINX_STACK}" "$@"
+    if [[ "${TLS_MODE}" == "http" ]]; then
+      "${COMPOSE_BIN[@]}" -f "${COMPOSE_NGINX_HTTP_STACK}" "$@"
+    else
+      "${COMPOSE_BIN[@]}" -f "${COMPOSE_NGINX_STACK}" "$@"
+    fi
   else
     "${COMPOSE_BIN[@]}" -f "${COMPOSE_BASE}" "$@"
   fi
@@ -142,10 +158,19 @@ compose() {
 prepare_docker_nginx_tls() {
   local conf_dir="${ROOT}/deploy/nginx/docker"
   local cert_dir="${conf_dir}/certs"
-  local template="${conf_dir}/default.conf.template"
   mkdir -p "${cert_dir}"
 
   [[ -n "${DOMAIN}" ]] || die "--nginx requires --domain"
+
+  if [[ "${TLS_MODE}" == "http" ]]; then
+    local template="${conf_dir}/default-http.conf.template"
+    [[ -f "${template}" ]] || die "missing ${template}"
+    sed -e "s|__SERVER_NAME__|${DOMAIN}|g" "${template}" > "${conf_dir}/default.conf"
+    log "Wrote ${conf_dir}/default.conf (HTTP only)"
+    return
+  fi
+
+  local template="${conf_dir}/default.conf.template"
   [[ -f "${template}" ]] || die "missing ${template}"
 
   case "${TLS_MODE}" in
@@ -157,7 +182,7 @@ prepare_docker_nginx_tls() {
       cp "${SSL_KEY}" "${cert_dir}/privkey.pem"
       ;;
     certbot)
-      die "Let's Encrypt inside Docker sidecar is not automated here. Use --host-nginx --certbot (host nginx), or --self-signed / --cert/--key for --nginx"
+      die "Let's Encrypt inside Docker sidecar is not automated here. Use --host-nginx --certbot (host nginx), or --http / --self-signed / --cert/--key for --nginx"
       ;;
     self-signed|"")
       TLS_MODE=self-signed
@@ -190,6 +215,9 @@ setup_host_nginx() {
   [[ -n "${DOMAIN}" ]] || die "--host-nginx requires --domain"
   local args=(--domain "${DOMAIN}" --upstream "127.0.0.1:${PORT}" --skip-bind)
   case "${TLS_MODE}" in
+    http)
+      args+=(--http)
+      ;;
     certbot)
       [[ -n "${EMAIL}" ]] || die "--certbot requires --email"
       args+=(--certbot --email "${EMAIL}")
@@ -219,20 +247,34 @@ cmd_build() {
 cmd_up() {
   if [[ "${MODE}" == "docker-nginx" ]]; then
     prepare_docker_nginx_tls
-    log "Starting Snapshot + Docker nginx (HTTPS)"
-    compose up -d
-    echo
-    echo "UI + API (HTTPS):  https://${DOMAIN}/"
-    echo "Health:            https://${DOMAIN}/api/health"
-    echo "Note: host ports 80/443 — do not combine with an existing host nginx on the same ports"
+    if [[ "${TLS_MODE}" == "http" ]]; then
+      log "Starting Snapshot + Docker nginx (HTTP)"
+      compose up -d
+      echo
+      echo "UI + API (HTTP):   http://${DOMAIN}/"
+      echo "Health:            http://${DOMAIN}/api/health"
+      echo "Note: host port 80 — do not combine with an existing host nginx on the same port"
+    else
+      log "Starting Snapshot + Docker nginx (HTTPS)"
+      compose up -d
+      echo
+      echo "UI + API (HTTPS):  https://${DOMAIN}/"
+      echo "Health:            https://${DOMAIN}/api/health"
+      echo "Note: host ports 80/443 — do not combine with an existing host nginx on the same ports"
+    fi
   elif [[ "${MODE}" == "host-nginx" ]]; then
     BIND=127.0.0.1
     log "Starting Snapshot published on 127.0.0.1:${PORT} only"
     compose up -d
     setup_host_nginx
     echo
-    echo "UI + API (HTTPS):  https://${DOMAIN}/"
-    echo "Health:            https://${DOMAIN}/api/health"
+    if [[ "${TLS_MODE}" == "http" ]]; then
+      echo "UI + API (HTTP):   http://${DOMAIN}/"
+      echo "Health:            http://${DOMAIN}/api/health"
+    else
+      echo "UI + API (HTTPS):  https://${DOMAIN}/"
+      echo "Health:            https://${DOMAIN}/api/health"
+    fi
     echo "App (localhost):   http://127.0.0.1:${PORT}/api/health"
   else
     log "Starting Snapshot on ${BIND}:${PORT}"
@@ -241,6 +283,7 @@ cmd_up() {
     echo "UI + API:  http://localhost:${PORT}"
     echo "Health:    http://localhost:${PORT}/api/health"
     echo "Tip (VM with existing nginx):"
+    echo "  ./deploy/container-deploy.sh --host-nginx --domain snapshot.example.com --http"
     echo "  ./deploy/container-deploy.sh --host-nginx --domain snapshot.example.com --certbot --email you@example.com"
   fi
   echo "Logs:      ./deploy/container-deploy.sh --logs"
@@ -249,10 +292,10 @@ cmd_up() {
 
 cmd_down() {
   log "Stopping Snapshot containers"
-  # Tear down whichever stack may be running
   compose_env
   "${COMPOSE_BIN[@]}" -f "${COMPOSE_BASE}" down 2>/dev/null || true
   "${COMPOSE_BIN[@]}" -f "${COMPOSE_NGINX_STACK}" down 2>/dev/null || true
+  "${COMPOSE_BIN[@]}" -f "${COMPOSE_NGINX_HTTP_STACK}" down 2>/dev/null || true
 }
 
 cmd_logs() {
@@ -266,10 +309,11 @@ cmd_logs() {
 cmd_status() {
   compose ps
   echo
-  if [[ "${MODE}" == "docker-nginx" || (-n "${DOMAIN}" && "${MODE}" == "host-nginx") ]]; then
-    local d="${DOMAIN}"
-    if [[ -n "${d}" ]]; then
-      curl -skf "https://${d}/api/health" && echo " https health: ok" || echo "https health: unreachable"
+  if [[ -n "${DOMAIN}" ]] && [[ "${MODE}" == "docker-nginx" || "${MODE}" == "host-nginx" ]]; then
+    if [[ "${TLS_MODE}" == "http" ]]; then
+      curl -sf "http://${DOMAIN}/api/health" && echo " http health: ok" || echo "http health: unreachable"
+    else
+      curl -skf "https://${DOMAIN}/api/health" && echo " https health: ok" || echo "https health: unreachable"
     fi
   fi
   curl -sf "http://127.0.0.1:${PORT}/api/health" && echo " app health: ok" || echo "app health: unreachable (expected if using docker-nginx without host publish)"

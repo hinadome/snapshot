@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Add Snapshot as an nginx site with HTTPS — without replacing existing sites.
+# Add Snapshot as an nginx site (HTTP or HTTPS) — without replacing existing sites.
 #
 # Safe behavior:
 #   - Never overwrites /etc/nginx/nginx.conf
@@ -8,7 +8,7 @@
 #   - Always runs `nginx -t` before reload
 #
 # Usage:
-#   ./deploy/nginx-setup.sh --domain snapshot.example.com
+#   ./deploy/nginx-setup.sh --domain snapshot.example.com --http
 #   ./deploy/nginx-setup.sh --domain snapshot.example.com --certbot --email ops@example.com
 #   ./deploy/nginx-setup.sh --domain snapshot.example.com --self-signed
 #   ./deploy/nginx-setup.sh --domain snapshot.example.com --cert /path/fullchain.pem --key /path/privkey.pem
@@ -17,7 +17,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEMPLATE="${ROOT}/deploy/nginx/snapshot.conf.template"
+TEMPLATE_HTTPS="${ROOT}/deploy/nginx/snapshot.conf.template"
+TEMPLATE_HTTP="${ROOT}/deploy/nginx/snapshot-http.conf.template"
 SITE_NAME="${SNAPSHOT_NGINX_SITE_NAME:-snapshot}"
 UPSTREAM_HOST="${SNAPSHOT_NGINX_UPSTREAM_HOST:-127.0.0.1}"
 UPSTREAM_PORT="${PORT:-${SNAPSHOT_PORT:-8787}}"
@@ -25,7 +26,7 @@ DOMAIN="${SNAPSHOT_DOMAIN:-}"
 EMAIL="${SNAPSHOT_CERTBOT_EMAIL:-}"
 CERT_PATH="${SNAPSHOT_SSL_CERT:-}"
 KEY_PATH="${SNAPSHOT_SSL_KEY:-}"
-MODE="" # certbot | self-signed | custom
+MODE="" # http | certbot | self-signed | custom
 DO_REMOVE=0
 SKIP_BIND=0
 
@@ -47,8 +48,9 @@ run_root() {
 
 usage() {
   cat <<'EOF'
-Snapshot nginx + HTTPS setup (additive — does not break existing sites)
+Snapshot nginx front (additive — does not break existing sites)
 
+  ./deploy/nginx-setup.sh --domain <hostname> --http
   ./deploy/nginx-setup.sh --domain <hostname> --certbot --email you@example.com
   ./deploy/nginx-setup.sh --domain <hostname> --self-signed
   ./deploy/nginx-setup.sh --domain <hostname> --cert fullchain.pem --key privkey.pem
@@ -57,10 +59,11 @@ Snapshot nginx + HTTPS setup (additive — does not break existing sites)
 Required:
   --domain NAME          server_name for this app only (new vhost)
 
-TLS (pick one):
-  --certbot --email E    Let's Encrypt via certbot (nginx plugin)
-  --self-signed          Generate a local cert (browsers will warn)
-  --cert PATH --key PATH Use existing certificate files
+Mode (pick one):
+  --http                 HTTP only on port 80 (no TLS) — lab / private network
+  --certbot --email E    Let's Encrypt HTTPS via certbot
+  --self-signed          HTTPS with a local cert (browsers will warn)
+  --cert PATH --key PATH HTTPS with existing certificate files
 
 Options:
   --site-name NAME       nginx site id (default: snapshot)
@@ -78,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage; exit 0 ;;
     --domain) DOMAIN="${2:-}"; shift 2 ;;
     --email) EMAIL="${2:-}"; shift 2 ;;
+    --http) MODE=http; shift ;;
     --certbot) MODE=certbot; shift ;;
     --self-signed) MODE=self-signed; shift ;;
     --cert) CERT_PATH="${2:-}"; MODE=custom; shift 2 ;;
@@ -100,7 +104,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 detect_nginx_layout() {
-  # Prefer Debian/Ubuntu sites-available so we never touch other enabled sites.
   if [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]]; then
     SITE_AVAILABLE="/etc/nginx/sites-available/${SITE_NAME}"
     SITE_ENABLED="/etc/nginx/sites-enabled/${SITE_NAME}"
@@ -173,15 +176,24 @@ remove_site() {
   log "Done. Other nginx sites were not modified."
 }
 
-render_site() {
+render_https_site() {
   local cert="$1" key="$2" out="$3"
-  [[ -f "${TEMPLATE}" ]] || die "missing template ${TEMPLATE}"
+  [[ -f "${TEMPLATE_HTTPS}" ]] || die "missing template ${TEMPLATE_HTTPS}"
   sed \
     -e "s|__SERVER_NAME__|${DOMAIN}|g" \
     -e "s|__UPSTREAM__|${UPSTREAM_HOST}:${UPSTREAM_PORT}|g" \
     -e "s|__SSL_CERT__|${cert}|g" \
     -e "s|__SSL_KEY__|${key}|g" \
-    "${TEMPLATE}" > "${out}"
+    "${TEMPLATE_HTTPS}" > "${out}"
+}
+
+render_http_site() {
+  local out="$1"
+  [[ -f "${TEMPLATE_HTTP}" ]] || die "missing template ${TEMPLATE_HTTP}"
+  sed \
+    -e "s|__SERVER_NAME__|${DOMAIN}|g" \
+    -e "s|__UPSTREAM__|${UPSTREAM_HOST}:${UPSTREAM_PORT}|g" \
+    "${TEMPLATE_HTTP}" > "${out}"
 }
 
 install_site_file() {
@@ -190,14 +202,23 @@ install_site_file() {
   log "Installing site file ${SITE_AVAILABLE} (additive)"
   run_root cp "${rendered}" "${SITE_AVAILABLE}"
   if [[ "${LAYOUT}" == "debian" ]]; then
-    # Symlink enable — do not remove or alter other links in sites-enabled
     run_root ln -sfn "${SITE_AVAILABLE}" "${SITE_ENABLED}"
+  fi
+}
+
+scheme_for_cors() {
+  if [[ "${MODE}" == "http" ]]; then
+    printf 'http'
+  else
+    printf 'https'
   fi
 }
 
 bind_app_localhost() {
   [[ "${SKIP_BIND}" -eq 1 ]] && return
   local env_path="${ROOT}/deploy/snapshot.env"
+  local scheme
+  scheme="$(scheme_for_cors)"
   if [[ ! -f "${env_path}" ]]; then
     warn "no ${env_path} yet — create it via ./deploy/vm-deploy.sh first"
     warn "set HOST=127.0.0.1 so Snapshot is not exposed on the public interface"
@@ -209,12 +230,11 @@ bind_app_localhost() {
   else
     printf '\nHOST=127.0.0.1\n' >> "${env_path}"
   fi
-  # Prefer same-origin CORS when behind the public hostname
   if grep -q '^SNAPSHOT_CORS_ORIGINS=' "${env_path}"; then
-    sed -i.bak "s|^SNAPSHOT_CORS_ORIGINS=.*|SNAPSHOT_CORS_ORIGINS=https://${DOMAIN}|" "${env_path}"
+    sed -i.bak "s|^SNAPSHOT_CORS_ORIGINS=.*|SNAPSHOT_CORS_ORIGINS=${scheme}://${DOMAIN}|" "${env_path}"
     rm -f "${env_path}.bak"
   else
-    printf 'SNAPSHOT_CORS_ORIGINS=https://%s\n' "${DOMAIN}" >> "${env_path}"
+    printf 'SNAPSHOT_CORS_ORIGINS=%s://%s\n' "${scheme}" "${DOMAIN}" >> "${env_path}"
   fi
   log "Updated ${env_path}: HOST=127.0.0.1 (app only reachable via nginx)"
 
@@ -263,11 +283,10 @@ run_certbot() {
     fi
   fi
 
-  # First install with a temporary self-signed so nginx -t succeeds, then certbot replaces certs.
   ensure_self_signed
   local tmp
   tmp="$(mktemp)"
-  render_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
+  render_https_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
   install_site_file "${tmp}"
   rm -f "${tmp}"
   nginx_test_and_reload
@@ -281,7 +300,6 @@ run_certbot() {
     --redirect \
     --keep-until-expiring
 
-  # Certbot may rewrite our server block; that is OK and still isolated to this server_name.
   CERT_PATH="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
   KEY_PATH="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
   nginx_test_and_reload
@@ -295,14 +313,13 @@ if [[ "${DO_REMOVE}" -eq 1 ]]; then
 fi
 
 [[ -n "${DOMAIN}" ]] || die "--domain is required (dedicated server_name; keeps other apps intact)"
-[[ -f "${TEMPLATE}" ]] || die "missing ${TEMPLATE}"
 
 if [[ -z "${MODE}" ]]; then
   if [[ -n "${CERT_PATH}" || -n "${KEY_PATH}" ]]; then
     MODE=custom
   else
     MODE=self-signed
-    warn "No TLS mode given — defaulting to --self-signed (use --certbot for real HTTPS)"
+    warn "No mode given — defaulting to --self-signed (use --http for plain HTTP, --certbot for real HTTPS)"
   fi
 fi
 
@@ -311,13 +328,20 @@ ensure_nginx_running
 detect_nginx_layout
 
 case "${MODE}" in
+  http)
+    tmp="$(mktemp)"
+    render_http_site "${tmp}"
+    install_site_file "${tmp}"
+    rm -f "${tmp}"
+    nginx_test_and_reload
+    ;;
   certbot)
     run_certbot
     ;;
   self-signed)
     ensure_self_signed
     tmp="$(mktemp)"
-    render_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
+    render_https_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
     install_site_file "${tmp}"
     rm -f "${tmp}"
     nginx_test_and_reload
@@ -327,28 +351,35 @@ case "${MODE}" in
     [[ -f "${CERT_PATH}" ]] || die "cert not found: ${CERT_PATH}"
     [[ -f "${KEY_PATH}" ]] || die "key not found: ${KEY_PATH}"
     tmp="$(mktemp)"
-    render_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
+    render_https_site "${CERT_PATH}" "${KEY_PATH}" "${tmp}"
     install_site_file "${tmp}"
     rm -f "${tmp}"
     nginx_test_and_reload
     ;;
   *)
-    die "unknown TLS mode: ${MODE}"
+    die "unknown mode: ${MODE}"
     ;;
 esac
 
 bind_app_localhost
 
+SCHEME="$(scheme_for_cors)"
 echo
 echo "Snapshot nginx vhost installed for server_name=${DOMAIN}"
+echo "  Mode:       ${MODE}"
 echo "  Layout:     ${LAYOUT}"
 echo "  Site file:  ${SITE_AVAILABLE}"
 echo "  Upstream:   ${UPSTREAM_HOST}:${UPSTREAM_PORT}"
-echo "  URL:        https://${DOMAIN}/"
-echo "  Health:     https://${DOMAIN}/api/health"
+echo "  URL:        ${SCHEME}://${DOMAIN}/"
+echo "  Health:     ${SCHEME}://${DOMAIN}/api/health"
 echo
 echo "Existing nginx sites were not modified."
-echo "Ensure DNS for ${DOMAIN} points at this VM, and open ports 80/443."
+if [[ "${MODE}" == "http" ]]; then
+  echo "Ensure DNS for ${DOMAIN} points at this VM, and open port 80."
+  echo "HTTP only — use --certbot or --self-signed for HTTPS when ready."
+else
+  echo "Ensure DNS for ${DOMAIN} points at this VM, and open ports 80/443."
+fi
 if [[ "${MODE}" == "self-signed" ]]; then
   echo "Browsers will warn on the self-signed cert until you switch to --certbot or --cert/--key."
 fi
