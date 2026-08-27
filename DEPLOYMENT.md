@@ -82,10 +82,11 @@ Implemented in [`deploy/lib/ensure-node.sh`](deploy/lib/ensure-node.sh), called 
 | `./deploy/vm-deploy.sh --foreground` | `./deploy/vm-deploy.sh --status` |
 | | `./deploy/vm-deploy.sh --uninstall-service` |
 
-**Check:** if `node -v` reports major version **≥ 20**, the script logs `Node vX.Y.Z OK` and continues.
+**Default version:** `SNAPSHOT_NODE_MIN_MAJOR` defaults to **`20`** when unset or empty (matches `package.json` `"engines": { "node": ">=20" }`). You do not need to export it for a normal deploy.
 
-**Install / upgrade:** if Node is missing or major version **< 20**, the script installs automatically:
+**Check:** if `node -v` reports major version **≥** the configured minimum, the script logs `Node vX.Y.Z OK (>= 20)` and continues.
 
+**Install / upgrade:** if Node is missing or the major version is too low, the script installs automatically:
 | OS / package manager | Method |
 |----------------------|--------|
 | Debian / Ubuntu (`apt-get`) | [NodeSource](https://github.com/nodesource/distributions) setup script + `apt install nodejs` |
@@ -106,10 +107,17 @@ After Node is ready, `vm-deploy.sh` runs `corepack enable` and activates pnpm.
 SNAPSHOT_SKIP_NODE_INSTALL=1 ./deploy/vm-deploy.sh
 ```
 
-**Custom minimum** (matches `package.json` `engines.node`):
+**Custom minimum:**
 
 ```bash
 SNAPSHOT_NODE_MIN_MAJOR=22 ./deploy/vm-deploy.sh
+```
+
+**Clear a bad exported value** (empty env var is treated like unset and still defaults to `20`):
+
+```bash
+unset SNAPSHOT_NODE_MIN_MAJOR
+./deploy/vm-deploy.sh
 ```
 
 Then open:
@@ -198,7 +206,7 @@ journalctl -u snapshot -f
 | `SNAPSHOT_CERTBOT_EMAIL` | — | Let's Encrypt account email |
 | `SNAPSHOT_SERVICE_NAME` | `snapshot` | systemd unit name |
 | `SNAPSHOT_SKIP_APT` | unset | Set to `1` to skip `playwright install-deps` |
-| `SNAPSHOT_NODE_MIN_MAJOR` | `20` | Minimum Node major version (install target on auto-install) |
+| `SNAPSHOT_NODE_MIN_MAJOR` | `20` | Minimum Node major version; defaults to `20` if unset **or empty** |
 | `SNAPSHOT_SKIP_NODE_INSTALL` | unset | Set to `1` to require pre-installed Node; no auto-install |
 
 Generated file (gitignored): `deploy/snapshot.env` — loaded by systemd via `EnvironmentFile=`.
@@ -375,7 +383,7 @@ After a **successful** job, uploaded HAR artifacts under the job folder are dele
 | `SNAPSHOT_WEB_DIST` | server | Path to Vite `dist` |
 | `SNAPSHOT_CORS_ORIGINS` | server | `*` or comma-separated allow-list |
 | `SNAPSHOT_DOMAIN` | nginx-setup | Vhost `server_name` |
-| `SNAPSHOT_NODE_MIN_MAJOR` | vm-deploy / ensure-node | Required Node major (default `20`) |
+| `SNAPSHOT_NODE_MIN_MAJOR` | vm-deploy / ensure-node | Required Node major; **default `20`** when unset or empty |
 | `SNAPSHOT_SKIP_NODE_INSTALL` | vm-deploy / ensure-node | Disable automatic Node install |
 
 ---
@@ -408,6 +416,7 @@ Data in the Docker volume `snapshot-data` is kept across rebuilds.
 
 | Symptom | What to try |
 |---------|-------------|
+| `SNAPSHOT_NODE_MIN_MAJOR: unbound variable` | Update to latest scripts (`ensure-node.sh` defaults to `20`); or `export SNAPSHOT_NODE_MIN_MAJOR=20` before deploy |
 | `need root or sudo to install Node.js` | Run with sudo, add your user to sudoers, or install Node 20+ manually and set `SNAPSHOT_SKIP_NODE_INSTALL=1` |
 | Node install fails (NodeSource / apt) | Check outbound HTTPS; on Ubuntu run `sudo apt-get install -y ca-certificates curl gnupg` then retry |
 | `Node install finished but version is still insufficient` | Old Node earlier on `PATH` — `hash -r`; check `which node` and `/usr/bin/node -v` |

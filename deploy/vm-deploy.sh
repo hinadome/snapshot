@@ -117,8 +117,9 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 setup_node() {
   [[ -f "${ENSURE_NODE_LIB}" ]] || die "missing ${ENSURE_NODE_LIB}"
+  export SNAPSHOT_NODE_MIN_MAJOR="${NODE_MIN_MAJOR:-20}"
   # shellcheck source=deploy/lib/ensure-node.sh
-  SNAPSHOT_NODE_MIN_MAJOR="${NODE_MIN_MAJOR}" source "${ENSURE_NODE_LIB}"
+  source "${ENSURE_NODE_LIB}"
   ensure_node
 }
 

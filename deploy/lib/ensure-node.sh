@@ -4,7 +4,13 @@
 #
 # Set SNAPSHOT_SKIP_NODE_INSTALL=1 to require a pre-installed Node instead.
 
-: "${SNAPSHOT_NODE_MIN_MAJOR:=20}"
+# Always default — parent may use `set -u` and an empty exported value.
+SNAPSHOT_NODE_MIN_MAJOR="${SNAPSHOT_NODE_MIN_MAJOR:-20}"
+export SNAPSHOT_NODE_MIN_MAJOR
+
+_ensure_node_min() {
+  printf '%s' "${SNAPSHOT_NODE_MIN_MAJOR:-20}"
+}
 
 _ensure_node_log() { printf '==> %s\n' "$*"; }
 _ensure_node_warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -18,7 +24,7 @@ _ensure_node_run_root() {
   elif _ensure_node_have sudo; then
     sudo "$@"
   else
-    _ensure_node_die "need root or sudo to install Node.js (or install Node >= ${SNAPSHOT_NODE_MIN_MAJOR} manually)"
+    _ensure_node_die "need root or sudo to install Node.js (or install Node >= $(_ensure_node_min) manually)"
   fi
 }
 
@@ -33,12 +39,14 @@ _ensure_node_major() {
 _ensure_node_ok() {
   local major
   major="$(_ensure_node_major)" || return 1
-  (( major >= SNAPSHOT_NODE_MIN_MAJOR ))
+  (( major >= $(_ensure_node_min) ))
 }
 
 _install_node_via_nodesource_apt() {
-  local setup_url="https://deb.nodesource.com/setup_${SNAPSHOT_NODE_MIN_MAJOR}.x"
-  _ensure_node_log "Installing Node.js ${SNAPSHOT_NODE_MIN_MAJOR}.x via NodeSource (apt)"
+  local min
+  min="$(_ensure_node_min)"
+  local setup_url="https://deb.nodesource.com/setup_${min}.x"
+  _ensure_node_log "Installing Node.js ${min}.x via NodeSource (apt)"
   _ensure_node_run_root apt-get update -y
   _ensure_node_run_root apt-get install -y ca-certificates curl gnupg
   curl -fsSL "${setup_url}" | _ensure_node_run_root bash -
@@ -46,8 +54,10 @@ _install_node_via_nodesource_apt() {
 }
 
 _install_node_via_nodesource_rpm() {
-  local setup_url="https://rpm.nodesource.com/setup_${SNAPSHOT_NODE_MIN_MAJOR}.x"
-  _ensure_node_log "Installing Node.js ${SNAPSHOT_NODE_MIN_MAJOR}.x via NodeSource (rpm)"
+  local min
+  min="$(_ensure_node_min)"
+  local setup_url="https://rpm.nodesource.com/setup_${min}.x"
+  _ensure_node_log "Installing Node.js ${min}.x via NodeSource (rpm)"
   _ensure_node_run_root yum install -y curl || _ensure_node_run_root dnf install -y curl
   curl -fsSL "${setup_url}" | _ensure_node_run_root bash -
   if _ensure_node_have dnf; then
@@ -58,22 +68,26 @@ _install_node_via_nodesource_rpm() {
 }
 
 _install_node_via_brew() {
+  local min
+  min="$(_ensure_node_min)"
   _ensure_node_log "Installing Node.js via Homebrew"
   if ! _ensure_node_have brew; then
-    _ensure_node_die "Homebrew not found — install Node ${SNAPSHOT_NODE_MIN_MAJOR}+ from https://nodejs.org/"
+    _ensure_node_die "Homebrew not found — install Node ${min}+ from https://nodejs.org/"
   fi
-  brew install "node@${SNAPSHOT_NODE_MIN_MAJOR}" || brew install node
+  brew install "node@${min}" || brew install node
   # Prefer versioned prefix when present
   local prefix
-  prefix="$(brew --prefix "node@${SNAPSHOT_NODE_MIN_MAJOR}" 2>/dev/null || true)"
+  prefix="$(brew --prefix "node@${min}" 2>/dev/null || true)"
   if [[ -n "${prefix}" && -d "${prefix}/bin" ]]; then
     export PATH="${prefix}/bin:${PATH}"
   fi
 }
 
 _install_node() {
+  local min
+  min="$(_ensure_node_min)"
   if [[ "${SNAPSHOT_SKIP_NODE_INSTALL:-}" == "1" ]]; then
-    _ensure_node_die "Node.js >= ${SNAPSHOT_NODE_MIN_MAJOR} required (SNAPSHOT_SKIP_NODE_INSTALL=1)"
+    _ensure_node_die "Node.js >= ${min} required (SNAPSHOT_SKIP_NODE_INSTALL=1)"
   fi
 
   if _ensure_node_have apt-get; then
@@ -83,7 +97,7 @@ _install_node() {
   elif [[ "$(uname -s)" == "Darwin" ]]; then
     _install_node_via_brew
   else
-    _ensure_node_die "unsupported OS for automatic Node install — install Node >= ${SNAPSHOT_NODE_MIN_MAJOR} manually (https://nodejs.org/)"
+    _ensure_node_die "unsupported OS for automatic Node install — install Node >= ${min} manually (https://nodejs.org/)"
   fi
 
   hash -r 2>/dev/null || true
@@ -91,21 +105,25 @@ _install_node() {
 
 # Public: call from deploy scripts
 ensure_node() {
+  local min
+  min="$(_ensure_node_min)"
+  SNAPSHOT_NODE_MIN_MAJOR="${min}"
+
   if _ensure_node_ok; then
-    _ensure_node_log "Node $(node -v) OK (>= ${SNAPSHOT_NODE_MIN_MAJOR})"
+    _ensure_node_log "Node $(node -v) OK (>= ${min})"
     return 0
   fi
 
   if _ensure_node_have node; then
-    _ensure_node_warn "Node $(node -v) is older than ${SNAPSHOT_NODE_MIN_MAJOR}; upgrading"
+    _ensure_node_warn "Node $(node -v) is older than ${min}; upgrading"
   else
-    _ensure_node_warn "Node.js not found; installing >= ${SNAPSHOT_NODE_MIN_MAJOR}"
+    _ensure_node_warn "Node.js not found; installing >= ${min}"
   fi
 
   _install_node
 
   if ! _ensure_node_ok; then
-    _ensure_node_die "Node install finished but version is still insufficient (need >= ${SNAPSHOT_NODE_MIN_MAJOR}, got $(node -v 2>/dev/null || echo none))"
+    _ensure_node_die "Node install finished but version is still insufficient (need >= ${min}, got $(node -v 2>/dev/null || echo none))"
   fi
 
   _ensure_node_log "Node $(node -v) ready"
