@@ -7,6 +7,7 @@ This guide covers running **Snapshot** (web UI + API + Playwright capture) on a 
 | Path | Purpose |
 |------|---------|
 | [`deploy/vm-deploy.sh`](deploy/vm-deploy.sh) | Install, build, systemd; optional `--nginx` HTTPS |
+| [`deploy/lib/ensure-node.sh`](deploy/lib/ensure-node.sh) | Node.js version check + auto-install (sourced by VM script) |
 | [`deploy/nginx-setup.sh`](deploy/nginx-setup.sh) | Add Snapshot nginx vhost + TLS (does not touch other sites) |
 | [`deploy/nginx/snapshot.conf.template`](deploy/nginx/snapshot.conf.template) | Host nginx `server{}` template |
 | [`deploy/container-deploy.sh`](deploy/container-deploy.sh) | Docker deploy; `--host-nginx` / `--nginx` HTTPS modes |
@@ -25,12 +26,13 @@ This guide covers running **Snapshot** (web UI + API + Playwright capture) on a 
 | Requirement | Notes |
 |-------------|--------|
 | Linux (Debian/Ubuntu preferred) | `playwright install-deps` uses `apt` |
-| Node.js **≥ 20** | https://nodejs.org/ |
-| pnpm | Via Corepack (`corepack enable`) or `npm i -g pnpm` |
-| Optional: `sudo` | For OS Chromium libs, systemd, nginx |
+| Node.js **≥ 20** | **Auto-installed** by `vm-deploy.sh` when missing or too old (see below) |
+| pnpm | Enabled via Corepack after Node is present |
+| **sudo** (recommended) | Required for auto Node install, Playwright OS libs, systemd, nginx |
 | Optional: DNS name | Required for Let's Encrypt (`--certbot`) |
 | Disk | Chromium + `node_modules` ≈ several GB; job PNGs under `data/` |
 
+You do **not** need to install Node manually on a fresh VM — `./deploy/vm-deploy.sh` handles it. Container deploy bundles Node inside the image.
 ### Container
 
 | Requirement | Notes |
@@ -63,10 +65,52 @@ chmod +x deploy/vm-deploy.sh deploy/nginx-setup.sh
 
 What this does:
 
-1. Installs deps, Playwright Chromium, builds UI + API  
-2. Starts systemd unit `snapshot` with **`HOST=127.0.0.1`** (not public)  
-3. Adds **only** an nginx site file for `server_name = snapshot.example.com`  
-4. Runs `nginx -t` then `reload` — **does not edit** `nginx.conf` or other sites  
+1. **Ensures Node.js ≥ 20** — checks version; installs or upgrades if needed (then enables pnpm via Corepack)  
+2. `pnpm install`, Playwright Chromium, builds UI + API  
+3. Starts systemd unit `snapshot` with **`HOST=127.0.0.1`** when using `--nginx` (not public)  
+4. Adds **only** an nginx site file for `server_name = snapshot.example.com`  
+5. Runs `nginx -t` then `reload` — **does not edit** `nginx.conf` or other sites  
+
+#### Node.js auto-install (VM only)
+
+Implemented in [`deploy/lib/ensure-node.sh`](deploy/lib/ensure-node.sh), called by `vm-deploy.sh` before any build.
+
+| When it runs | When it is skipped |
+|--------------|-------------------|
+| `./deploy/vm-deploy.sh` (default) | `./deploy/vm-deploy.sh --start` |
+| `./deploy/vm-deploy.sh --build-only` | `./deploy/vm-deploy.sh --stop` |
+| `./deploy/vm-deploy.sh --foreground` | `./deploy/vm-deploy.sh --status` |
+| | `./deploy/vm-deploy.sh --uninstall-service` |
+
+**Check:** if `node -v` reports major version **≥ 20**, the script logs `Node vX.Y.Z OK` and continues.
+
+**Install / upgrade:** if Node is missing or major version **< 20**, the script installs automatically:
+
+| OS / package manager | Method |
+|----------------------|--------|
+| Debian / Ubuntu (`apt-get`) | [NodeSource](https://github.com/nodesource/distributions) setup script + `apt install nodejs` |
+| RHEL / Fedora / CentOS (`dnf` / `yum`) | NodeSource setup script + `dnf`/`yum install nodejs` |
+| macOS | Homebrew `node@20` (or `node`) |
+
+Requirements for auto-install:
+
+- Network access to NodeSource (and `curl`)
+- **root** or **sudo** on Linux
+
+After Node is ready, `vm-deploy.sh` runs `corepack enable` and activates pnpm.
+
+**Opt out** (air-gapped or custom Node layout):
+
+```bash
+# Install Node 20 yourself, then:
+SNAPSHOT_SKIP_NODE_INSTALL=1 ./deploy/vm-deploy.sh
+```
+
+**Custom minimum** (matches `package.json` `engines.node`):
+
+```bash
+SNAPSHOT_NODE_MIN_MAJOR=22 ./deploy/vm-deploy.sh
+```
 
 Then open:
 
@@ -154,6 +198,8 @@ journalctl -u snapshot -f
 | `SNAPSHOT_CERTBOT_EMAIL` | — | Let's Encrypt account email |
 | `SNAPSHOT_SERVICE_NAME` | `snapshot` | systemd unit name |
 | `SNAPSHOT_SKIP_APT` | unset | Set to `1` to skip `playwright install-deps` |
+| `SNAPSHOT_NODE_MIN_MAJOR` | `20` | Minimum Node major version (install target on auto-install) |
+| `SNAPSHOT_SKIP_NODE_INSTALL` | unset | Set to `1` to require pre-installed Node; no auto-install |
 
 Generated file (gitignored): `deploy/snapshot.env` — loaded by systemd via `EnvironmentFile=`.
 
@@ -329,6 +375,8 @@ After a **successful** job, uploaded HAR artifacts under the job folder are dele
 | `SNAPSHOT_WEB_DIST` | server | Path to Vite `dist` |
 | `SNAPSHOT_CORS_ORIGINS` | server | `*` or comma-separated allow-list |
 | `SNAPSHOT_DOMAIN` | nginx-setup | Vhost `server_name` |
+| `SNAPSHOT_NODE_MIN_MAJOR` | vm-deploy / ensure-node | Required Node major (default `20`) |
+| `SNAPSHOT_SKIP_NODE_INSTALL` | vm-deploy / ensure-node | Disable automatic Node install |
 
 ---
 
@@ -360,6 +408,10 @@ Data in the Docker volume `snapshot-data` is kept across rebuilds.
 
 | Symptom | What to try |
 |---------|-------------|
+| `need root or sudo to install Node.js` | Run with sudo, add your user to sudoers, or install Node 20+ manually and set `SNAPSHOT_SKIP_NODE_INSTALL=1` |
+| Node install fails (NodeSource / apt) | Check outbound HTTPS; on Ubuntu run `sudo apt-get install -y ca-certificates curl gnupg` then retry |
+| `Node install finished but version is still insufficient` | Old Node earlier on `PATH` — `hash -r`; check `which node` and `/usr/bin/node -v` |
+| `unsupported OS for automatic Node install` | Install Node ≥ 20 from https://nodejs.org/ or use container deploy |
 | `Web UI not built` / HTTP 503 on `/` | Run `pnpm --filter @snapshot/web build` or full `./deploy/vm-deploy.sh --build-only` |
 | Chromium fails to launch on VM | `pnpm --filter @snapshot/replay exec playwright install-deps chromium` (with sudo) |
 | Container OOM / blank captures | Raise `SNAPSHOT_MEM_LIMIT`; keep `shm_size: 1gb` |

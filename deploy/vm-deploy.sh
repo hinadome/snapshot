@@ -16,7 +16,8 @@ PORT="${PORT:-${SNAPSHOT_PORT:-8787}}"
 DATA_DIR="${SNAPSHOT_DATA_DIR:-${ROOT}/data}"
 WEB_DIST="${SNAPSHOT_WEB_DIST:-${ROOT}/apps/web/dist}"
 HOST="${HOST:-${SNAPSHOT_HOST:-0.0.0.0}}"
-NODE_MIN_MAJOR=20
+NODE_MIN_MAJOR="${SNAPSHOT_NODE_MIN_MAJOR:-20}"
+ENSURE_NODE_LIB="${ROOT}/deploy/lib/ensure-node.sh"
 
 # Optional nginx front (HTTPS) — additive site only
 WITH_NGINX=0
@@ -49,7 +50,16 @@ Environment:
   SNAPSHOT_CORS_ORIGINS    CORS origins or *
   SNAPSHOT_DOMAIN          Hostname for nginx vhost
   SNAPSHOT_CERTBOT_EMAIL   Let's Encrypt email
+  SNAPSHOT_NODE_MIN_MAJOR  Required Node major (default 20)
+  SNAPSHOT_SKIP_NODE_INSTALL=1  Fail instead of auto-installing Node
 EOF
+}
+
+needs_node() {
+  case "${ACTION}" in
+    build-only|deploy|foreground) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 ACTION="deploy"
@@ -105,18 +115,11 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-ensure_node() {
-  if have node; then
-    local major
-    major="$(node -p 'process.versions.node.split(".")[0]')"
-    if (( major >= NODE_MIN_MAJOR )); then
-      log "Node $(node -v) OK"
-      return
-    fi
-    warn "Node $(node -v) is older than ${NODE_MIN_MAJOR}; continuing anyway may fail"
-    return
-  fi
-  die "Node.js >= ${NODE_MIN_MAJOR} is required. Install from https://nodejs.org/ or your package manager."
+setup_node() {
+  [[ -f "${ENSURE_NODE_LIB}" ]] || die "missing ${ENSURE_NODE_LIB}"
+  # shellcheck source=deploy/lib/ensure-node.sh
+  SNAPSHOT_NODE_MIN_MAJOR="${NODE_MIN_MAJOR}" source "${ENSURE_NODE_LIB}"
+  ensure_node
 }
 
 ensure_pnpm() {
@@ -313,8 +316,10 @@ cmd_uninstall_service() {
   fi
 }
 
-ensure_node
-ensure_pnpm
+if needs_node; then
+  setup_node
+  ensure_pnpm
+fi
 
 case "${ACTION}" in
   build-only) build_app ;;
