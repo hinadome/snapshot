@@ -110,6 +110,41 @@ a {
   font-size: 0.95rem;
 }
 
+.panel-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  user-select: none;
+}
+
+.auth-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.15rem;
+}
+
+.auth-panel p {
+  color: var(--muted);
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.auth-panel code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+.field input {
+  background: var(--bg0);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+}
+
+.field input:focus {
+  outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
 .controls {
   display: flex;
   flex-wrap: wrap;

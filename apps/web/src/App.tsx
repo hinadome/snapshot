@@ -8,6 +8,8 @@ import type {
 import {
   createJob,
   createJobFromPaste,
+  establishSession,
+  fetchAuthStatus,
   fetchJob,
   fetchJobs,
   fetchStrategies,
@@ -16,6 +18,12 @@ import {
 } from './api';
 
 type KindFilter = 'all' | CaptureKind;
+
+type AuthState = {
+  ready: boolean;
+  required: boolean;
+  authenticated: boolean;
+};
 
 function formatOffset(ms: number): string {
   const s = Math.max(0, ms) / 1000;
@@ -52,16 +60,38 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [auth, setAuth] = useState<AuthState>({
+    ready: false,
+    required: false,
+    authenticated: true,
+  });
+  const [apiToken, setApiToken] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authenticating, setAuthenticating] = useState(false);
+
+  const needsLogin = auth.ready && auth.required && !auth.authenticated;
 
   const refreshRecent = useCallback(() => {
+    if (needsLogin) return;
     void fetchJobs(15)
       .then(setRecentJobs)
       .catch(() => {
         /* ignore — server may be starting */
       });
+  }, [needsLogin]);
+
+  useEffect(() => {
+    void fetchAuthStatus()
+      .then((status) => {
+        setAuth({ ready: true, ...status });
+      })
+      .catch(() => {
+        setAuth({ ready: true, required: false, authenticated: true });
+      });
   }, []);
 
   useEffect(() => {
+    if (needsLogin) return;
     void fetchStrategies()
       .then((list) => {
         setStrategies(list);
@@ -70,14 +100,42 @@ export function App() {
         }
       })
       .catch((e: unknown) => {
-        setError(
+        const message =
           e instanceof Error
             ? e.message
-            : 'Could not reach API. Is the server running?',
-        );
+            : 'Could not reach API. Is the server running?';
+        if (message.toLowerCase().includes('unauthorized')) {
+          setAuth((prev) => ({
+            ...prev,
+            ready: true,
+            required: true,
+            authenticated: false,
+          }));
+          return;
+        }
+        setError(message);
       });
     refreshRecent();
-  }, [strategyId, refreshRecent]);
+  }, [strategyId, refreshRecent, needsLogin]);
+
+  const onAuthenticate = async () => {
+    const token = apiToken.trim();
+    if (!token) {
+      setAuthError('Enter the API token');
+      return;
+    }
+    setAuthenticating(true);
+    setAuthError(null);
+    try {
+      await establishSession(token);
+      setAuth((prev) => ({ ...prev, authenticated: true }));
+      setApiToken('');
+    } catch (e: unknown) {
+      setAuthError(e instanceof Error ? e.message : 'Authentication failed');
+    } finally {
+      setAuthenticating(false);
+    }
+  };
 
   const filteredItems = useMemo(() => {
     if (kindFilter === 'all') return items;
@@ -182,7 +240,43 @@ export function App() {
         </p>
       </header>
 
-      <section className="panel">
+      {needsLogin ? (
+        <section className="panel auth-panel">
+          <h2>Sign in</h2>
+          <p>
+            This Snapshot instance requires an API token. Enter the value of{' '}
+            <code>SNAPSHOT_API_TOKEN</code> to start a browser session (stored
+            in an HttpOnly cookie).
+          </p>
+          <div className="field">
+            <label htmlFor="api-token">API token</label>
+            <input
+              id="api-token"
+              type="password"
+              autoComplete="current-password"
+              value={apiToken}
+              onChange={(e) => {
+                setApiToken(e.target.value);
+                setAuthError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void onAuthenticate();
+              }}
+            />
+          </div>
+          {authError ? <p className="error">{authError}</p> : null}
+          <button
+            type="button"
+            className="btn"
+            disabled={authenticating}
+            onClick={() => void onAuthenticate()}
+          >
+            {authenticating ? 'Signing in…' : 'Sign in'}
+          </button>
+        </section>
+      ) : null}
+
+      <section className={`panel${needsLogin ? ' panel-disabled' : ''}`}>
         <div
           className={`dropzone${dragOver ? ' active' : ''}`}
           onDragOver={(e) => {

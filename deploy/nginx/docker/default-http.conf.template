@@ -1,6 +1,9 @@
 # Docker nginx HTTP-only sidecar (no TLS).
 # Placeholders: __SERVER_NAME__
 
+limit_req_zone $binary_remote_addr zone=snapshot_req:10m rate=30r/m;
+limit_req_status 429;
+
 upstream snapshot_backend {
     server snapshot:8787;
     keepalive 8;
@@ -22,7 +25,12 @@ server {
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;
 
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
     location / {
+        limit_req zone=snapshot_req burst=10 nodelay;
         proxy_pass http://snapshot_backend;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

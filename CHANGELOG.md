@@ -12,9 +12,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/). Versioning foll
 - Production deploy: `deploy/vm-deploy.sh` (VM + systemd), `deploy/container-deploy.sh` (Docker Compose), `deploy/Dockerfile`, and [DEPLOYMENT.md](DEPLOYMENT.md)
 - API serves built web UI on the same port in production (`SNAPSHOT_WEB_DIST`); configurable `HOST` bind (`127.0.0.1` behind nginx)
 - Configurable CORS via `SNAPSHOT_CORS_ORIGINS`
-- nginx front: `deploy/nginx-setup.sh` — **additive** vhost; `--http` (port 80), Let's Encrypt, self-signed, or custom certs
-- Container parity: `--host-nginx` / `--nginx` with `--http` or HTTPS; Compose `init`, `mem_limit`, `SNAPSHOT_BIND`
-- VM Node auto-install via `deploy/lib/ensure-node.sh` (default major `20`)
+- Optional API auth via `SNAPSHOT_API_TOKEN` (Bearer header or HttpOnly session cookie from `POST /api/auth/session`)
+- Job ID validation, queue depth cap (`SNAPSHOT_MAX_QUEUE`), sanitized API errors, security response headers
+- nginx front: `deploy/nginx-setup.sh` — **additive** vhost; `--http` (port 80), Let's Encrypt, self-signed, or custom certs; rate-limit zone install
+- Container parity: `--host-nginx` / `--nginx` with `--http` or HTTPS; `--public` (requires token); Compose `init`, `mem_limit`, default `SNAPSHOT_BIND=127.0.0.1`
+- VM Node auto-install via `deploy/lib/ensure-node.sh` (default major `20`); VM `--public` flag
 
 ---
 

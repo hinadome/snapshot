@@ -16,7 +16,8 @@ SERVICE_FILE="${ROOT}/deploy/systemd/snapshot.service"
 PORT="${PORT:-${SNAPSHOT_PORT:-8787}}"
 DATA_DIR="${SNAPSHOT_DATA_DIR:-${ROOT}/data}"
 WEB_DIST="${SNAPSHOT_WEB_DIST:-${ROOT}/apps/web/dist}"
-HOST="${HOST:-${SNAPSHOT_HOST:-0.0.0.0}}"
+HOST="${HOST:-${SNAPSHOT_HOST:-}}"
+PUBLIC_BIND=0
 NODE_MIN_MAJOR="${SNAPSHOT_NODE_MIN_MAJOR:-20}"
 ENSURE_NODE_LIB="${ROOT}/deploy/lib/ensure-node.sh"
 
@@ -27,8 +28,12 @@ NGINX_EMAIL="${SNAPSHOT_CERTBOT_EMAIL:-}"
 NGINX_TLS="" # http | certbot | self-signed | custom
 NGINX_CERT="${SNAPSHOT_SSL_CERT:-}"
 NGINX_KEY="${SNAPSHOT_SSL_KEY:-}"
+VALIDATE_DOMAIN_LIB="${ROOT}/deploy/lib/validate-domain.sh"
 
 cd "${ROOT}"
+
+# shellcheck source=deploy/lib/validate-domain.sh
+source "${VALIDATE_DOMAIN_LIB}"
 
 usage() {
   cat <<'EOF'
@@ -42,12 +47,16 @@ Snapshot VM deploy
   ./deploy/vm-deploy.sh --build-only
   ./deploy/vm-deploy.sh --start | --stop | --status
   ./deploy/vm-deploy.sh --foreground
+  ./deploy/vm-deploy.sh --public
+                                         Bind 0.0.0.0 (requires SNAPSHOT_API_TOKEN)
   ./deploy/vm-deploy.sh --uninstall-service
   ./deploy/nginx-setup.sh ...            nginx-only (see that script --help)
 
 Environment:
   PORT / SNAPSHOT_PORT     App listen port (default 8787)
-  HOST / SNAPSHOT_HOST     Bind address (default 0.0.0.0; nginx sets 127.0.0.1)
+  HOST / SNAPSHOT_HOST     Bind address (default 127.0.0.1; --public uses 0.0.0.0)
+  SNAPSHOT_API_TOKEN       Optional API token (required with --public)
+  SNAPSHOT_MAX_QUEUE       Max pending capture jobs (default 8)
   SNAPSHOT_DATA_DIR        Job data directory (default <repo>/data)
   SNAPSHOT_WEB_DIST        Built UI path
   SNAPSHOT_CORS_ORIGINS    CORS origins or *
@@ -77,6 +86,7 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
     --stop) ACTION=stop ;;
     --status) ACTION=status ;;
     --foreground) ACTION=foreground ;;
+    --public) PUBLIC_BIND=1 ;;
     --uninstall-service) ACTION=uninstall-service ;;
     --deploy) ACTION=deploy ;;
     --nginx) WITH_NGINX=1 ;;
@@ -112,6 +122,18 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
   esac
   i=$((i + 1))
 done
+
+if [[ "${PUBLIC_BIND}" -eq 1 ]] && [[ -z "${SNAPSHOT_API_TOKEN:-}" ]]; then
+  die "--public requires SNAPSHOT_API_TOKEN (e.g. export SNAPSHOT_API_TOKEN=\$(openssl rand -hex 32))"
+fi
+
+if [[ -z "${HOST}" ]]; then
+  if [[ "${PUBLIC_BIND}" -eq 1 ]]; then
+    HOST="0.0.0.0"
+  else
+    HOST="127.0.0.1"
+  fi
+fi
 
 log() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -204,6 +226,8 @@ NODE_ENV=production
 SNAPSHOT_DATA_DIR=${DATA_DIR}
 SNAPSHOT_WEB_DIST=${WEB_DIST}
 SNAPSHOT_CORS_ORIGINS=${cors}
+SNAPSHOT_API_TOKEN=${SNAPSHOT_API_TOKEN:-}
+SNAPSHOT_MAX_QUEUE=${SNAPSHOT_MAX_QUEUE:-8}
 EOF
   log "Wrote ${env_path} (HOST=${bind_host})"
 }
@@ -248,6 +272,9 @@ install_systemd() {
 setup_nginx() {
   [[ "${WITH_NGINX}" -eq 1 ]] || return 0
   [[ -n "${NGINX_DOMAIN}" ]] || die "--nginx requires --domain <hostname>"
+  if declare -f validate_domain >/dev/null 2>&1; then
+    validate_domain "${NGINX_DOMAIN}" || die "invalid domain: ${NGINX_DOMAIN}"
+  fi
 
   local args=(--domain "${NGINX_DOMAIN}")
   case "${NGINX_TLS}" in

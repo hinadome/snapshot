@@ -19,14 +19,16 @@ services:
     image: ${SNAPSHOT_IMAGE:-snapshot:latest}
     container_name: snapshot
     ports:
-      # Override bind with SNAPSHOT_BIND=127.0.0.1 for host-nginx / private deploy
-      - "${SNAPSHOT_BIND:-0.0.0.0}:${SNAPSHOT_PORT:-8787}:8787"
+      # Default localhost-only; set SNAPSHOT_BIND=0.0.0.0 or use --public to expose
+      - "${SNAPSHOT_BIND:-127.0.0.1}:${SNAPSHOT_PORT:-8787}:8787"
     environment:
       PORT: "8787"
       HOST: "0.0.0.0"
       SNAPSHOT_DATA_DIR: /data
       SNAPSHOT_WEB_DIST: /app/apps/web/dist
-      SNAPSHOT_CORS_ORIGINS: ${SNAPSHOT_CORS_ORIGINS:-*}
+      SNAPSHOT_CORS_ORIGINS: ${SNAPSHOT_CORS_ORIGINS:-}
+      SNAPSHOT_API_TOKEN: ${SNAPSHOT_API_TOKEN:-}
+      SNAPSHOT_MAX_QUEUE: ${SNAPSHOT_MAX_QUEUE:-8}
       NODE_ENV: production
     volumes:
       - snapshot-data:/data

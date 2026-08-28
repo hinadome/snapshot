@@ -27,6 +27,16 @@ pnpm dev       # web + API (dev)
 ./deploy/vm-deploy.sh --nginx --domain snapshot.example.com --certbot --email you@example.com
 ```
 
+**Lab / LAN exposure** (`--public` binds `0.0.0.0` and **requires** `SNAPSHOT_API_TOKEN`):
+
+```bash
+export SNAPSHOT_API_TOKEN="$(openssl rand -hex 32)"
+./deploy/container-deploy.sh --public
+# or: ./deploy/vm-deploy.sh --public
+```
+
+Then open `http://<server-ip>:8787/`. See [Public deployment & web UI auth](#public-deployment--web-ui-auth) below.
+
 1. Open the UI  
 2. Drop a **HAR with content** (or `.har.zip`), or paste check-result JSON / base64  
 3. Pick a **capture strategy**  
@@ -200,6 +210,9 @@ Ingest may use short-lived OS temp dirs (`/tmp/snapshot-*`); those are removed a
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Liveness |
+| GET | `/api/auth/session` | Auth required? / session valid? |
+| POST | `/api/auth/session` | Exchange token for HttpOnly session cookie |
+| DELETE | `/api/auth/session` | Clear session cookie |
 | GET | `/api/strategies` | Strategy list |
 | GET | `/api/jobs?limit=20` | Recent jobs |
 | POST | `/api/jobs` | Create job (multipart **or** JSON/text) |
@@ -227,6 +240,68 @@ Also supported: `{ "harZipBase64": "…" }`, `{ "har": "…" }`, or a raw HAR (`
 jq -c '{strategyId:"document-navigation"} + .' packages/core/fixtures/sample.har.json \
   | curl -s -X POST http://localhost:8787/api/jobs -H 'Content-Type: application/json' -d @-
 ```
+
+When `SNAPSHOT_API_TOKEN` is set, pass `Authorization: Bearer <token>` (or sign in via the web UI — see below).
+
+---
+
+## Public deployment & web UI auth
+
+`--public` exposes Snapshot on the network (`0.0.0.0`) and the deploy scripts **require** `SNAPSHOT_API_TOKEN`. The UI does not change because of `--public` itself — it changes because a token is configured, which enables API authentication.
+
+| Deploy | Typical URL | Sign-in required? |
+|--------|-------------|-------------------|
+| Default (localhost) | `http://127.0.0.1:8787/` | No (unless you set a token manually) |
+| `--public` + token | `http://<server-ip>:8787/` | Yes — first visit |
+| nginx + token | `https://snapshot.example.com/` | Yes — first visit |
+
+There is **no** build-time frontend token (`VITE_*`). Tokens are never embedded in the static UI bundle or screenshot URLs.
+
+### First visit (browser)
+
+```mermaid
+sequenceDiagram
+  participant Browser
+  participant UI as Static UI (/)
+  participant Auth as GET /api/auth/session
+  participant API as Protected /api/*
+
+  Browser->>UI: Load http://host:8787/
+  UI->>Auth: fetch (credentials: include)
+  Auth-->>UI: { required: true, authenticated: false }
+
+  Note over Browser: Sign-in panel shown<br/>Upload area greyed out
+
+  Browser->>Auth: POST /api/auth/session { token }
+  Auth-->>Browser: Set-Cookie: snapshot_token (HttpOnly)
+  Auth-->>UI: { ok: true }
+
+  Note over Browser: Sign-in hidden — upload enabled
+
+  UI->>API: GET /api/strategies, /api/jobs
+  Browser->>API: POST /api/jobs (HAR upload)
+  Browser->>API: GET …/screenshots/….png
+  Note over Browser: img tags send cookie — no token in URL
+```
+
+1. **Load app** — React UI served from the same host/port as the API.
+2. **Auth check** — `GET /api/auth/session` returns `{ required: true, authenticated: false }`.
+3. **Sign in** — user enters `SNAPSHOT_API_TOKEN`; `POST /api/auth/session` sets an **HttpOnly** `snapshot_token` cookie (7-day lifetime).
+4. **Use Snapshot** — upload HAR, pick strategy, view timeline; all `fetch()` calls use `credentials: 'include'`.
+5. **Screenshots** — `<img src="/api/jobs/…/screenshots/….png">` sends the cookie automatically (no `?access_token=`).
+
+### Return visit
+
+If the HttpOnly cookie is still valid, `GET /api/auth/session` returns `authenticated: true` and the user goes straight to the upload UI.
+
+### Scripts / curl
+
+```bash
+curl -H "Authorization: Bearer $SNAPSHOT_API_TOKEN" \
+  http://host:8787/api/strategies
+```
+
+Full ops detail: [DEPLOYMENT.md — API authentication](DEPLOYMENT.md#api-authentication).
 
 ---
 

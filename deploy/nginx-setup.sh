@@ -19,6 +19,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATE_HTTPS="${ROOT}/deploy/nginx/snapshot.conf.template"
 TEMPLATE_HTTP="${ROOT}/deploy/nginx/snapshot-http.conf.template"
+RATE_LIMITS="${ROOT}/deploy/nginx/snapshot-rate-limit.conf"
+VALIDATE_DOMAIN_LIB="${ROOT}/deploy/lib/validate-domain.sh"
 SITE_NAME="${SNAPSHOT_NGINX_SITE_NAME:-snapshot}"
 UPSTREAM_HOST="${SNAPSHOT_NGINX_UPSTREAM_HOST:-127.0.0.1}"
 UPSTREAM_PORT="${PORT:-${SNAPSHOT_PORT:-8787}}"
@@ -196,9 +198,17 @@ render_http_site() {
     "${TEMPLATE_HTTP}" > "${out}"
 }
 
+install_rate_limits() {
+  [[ -f "${RATE_LIMITS}" ]] || return 0
+  local dest="/etc/nginx/conf.d/snapshot-rate-limit.conf"
+  log "Installing rate limit zone ${dest} (additive)"
+  run_root cp "${RATE_LIMITS}" "${dest}"
+}
+
 install_site_file() {
   local rendered="$1"
   detect_nginx_layout
+  install_rate_limits
   log "Installing site file ${SITE_AVAILABLE} (additive)"
   run_root cp "${rendered}" "${SITE_AVAILABLE}"
   if [[ "${LAYOUT}" == "debian" ]]; then
@@ -313,6 +323,12 @@ if [[ "${DO_REMOVE}" -eq 1 ]]; then
 fi
 
 [[ -n "${DOMAIN}" ]] || die "--domain is required (dedicated server_name; keeps other apps intact)"
+
+# shellcheck source=deploy/lib/validate-domain.sh
+source "${VALIDATE_DOMAIN_LIB}"
+if ! validate_domain "${DOMAIN}"; then
+  die "invalid domain name: ${DOMAIN} (use a hostname like snapshot.example.com)"
+fi
 
 if [[ -z "${MODE}" ]]; then
   if [[ -n "${CERT_PATH}" || -n "${KEY_PATH}" ]]; then

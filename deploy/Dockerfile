@@ -46,7 +46,6 @@ ENV PORT=8787
 ENV HOST=0.0.0.0
 ENV SNAPSHOT_DATA_DIR=/data
 ENV SNAPSHOT_WEB_DIST=/app/apps/web/dist
-ENV SNAPSHOT_CORS_ORIGINS=*
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/server/package.json apps/server/

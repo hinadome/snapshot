@@ -16,7 +16,18 @@ import {
 const queue: string[] = [];
 let running = false;
 
+export function getQueueDepth(): number {
+  return queue.length + (running ? 1 : 0);
+}
+
+export function isQueueFull(): boolean {
+  return queue.length >= Number(process.env.SNAPSHOT_MAX_QUEUE ?? 8);
+}
+
 export function enqueueJob(jobId: string): void {
+  if (isQueueFull()) {
+    throw new Error('Server queue is full; try again later');
+  }
   queue.push(jobId);
   void pump();
 }

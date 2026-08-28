@@ -209,6 +209,7 @@ journalctl -u snapshot -f
 | `--build-only` | Dependencies + Playwright + compile only |
 | `--start` / `--stop` / `--status` | systemd + health |
 | `--foreground` | Run in this terminal |
+| `--public` | Bind `0.0.0.0` (requires `SNAPSHOT_API_TOKEN`) |
 | `--uninstall-service` | Remove systemd unit only (nginx site stays until `--remove`) |
 
 #### VM environment variables
@@ -216,7 +217,9 @@ journalctl -u snapshot -f
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PORT` / `SNAPSHOT_PORT` | `8787` | App listen port |
-| `HOST` / `SNAPSHOT_HOST` | `0.0.0.0` (or `127.0.0.1` with nginx) | Bind address |
+| `HOST` / `SNAPSHOT_HOST` | `127.0.0.1` (or `0.0.0.0` with `--public`) | Bind address; nginx forces `127.0.0.1` |
+| `SNAPSHOT_API_TOKEN` | — | Optional API token; **required** with `--public` |
+| `SNAPSHOT_MAX_QUEUE` | `8` | Max pending capture jobs |
 | `SNAPSHOT_DATA_DIR` | `<repo>/data` | Jobs + screenshots |
 | `SNAPSHOT_WEB_DIST` | `<repo>/apps/web/dist` | Built Vite UI |
 | `SNAPSHOT_CORS_ORIGINS` | `*` / `https://<domain>` with nginx | CORS allow-list |
@@ -246,11 +249,16 @@ sudo ufw allow 443/tcp
 # Do NOT expose 8787 publicly when HOST=127.0.0.1
 ```
 
-Without nginx (dev only):
+Without nginx (localhost or lab only):
 
 ```bash
-sudo ufw allow 8787/tcp
+./deploy/vm-deploy.sh
+# LAN exposure (requires token):
+export SNAPSHOT_API_TOKEN="$(openssl rand -hex 32)"
+./deploy/vm-deploy.sh --public
 ```
+
+By default the app binds **127.0.0.1** only. Use `--public` only on trusted networks and always set `SNAPSHOT_API_TOKEN`.
 
 ---
 
@@ -290,7 +298,7 @@ Pick a mode based on whether the **host already runs nginx** (same rule as the V
 | **Host nginx HTTPS** | nginx already on the VM | `--host-nginx --domain … --certbot` |
 | **Docker nginx HTTP** | No host nginx; HTTP only | `--nginx --domain … --http` |
 | **Docker nginx HTTPS** | No host nginx / pure Docker host | `--nginx --domain … --self-signed` |
-| **Simple HTTP** | Lab / VPN only | default (publishes `:8787`) |
+| **Simple HTTP** | Lab / VPN only | default (`127.0.0.1:8787`) |
 
 #### 2a. Recommended: container + existing host nginx
 
@@ -348,7 +356,13 @@ Uses [`deploy/docker-compose.nginx.yml`](deploy/docker-compose.nginx.yml).
 ```bash
 ./deploy/container-deploy.sh
 # or: SNAPSHOT_PORT=8080 ./deploy/container-deploy.sh
+
+# Expose on all interfaces (requires token):
+export SNAPSHOT_API_TOKEN="$(openssl rand -hex 32)"
+./deploy/container-deploy.sh --public
 ```
+
+Default bind is **127.0.0.1** — reachable only from the host unless you pass `--public`.
 
 #### Container hardening (base Compose)
 
@@ -357,7 +371,9 @@ Uses [`deploy/docker-compose.nginx.yml`](deploy/docker-compose.nginx.yml).
 | `init: true` | on | Reap Chromium zombie processes |
 | `shm_size` | `1gb` | Chromium stability |
 | `mem_limit` | `2g` (override `SNAPSHOT_MEM_LIMIT`) | Cap runaway captures |
-| `SNAPSHOT_BIND` | `0.0.0.0` or `127.0.0.1` | Host publish address |
+| `SNAPSHOT_BIND` | `127.0.0.1` or `0.0.0.0` | Host publish address |
+| `SNAPSHOT_API_TOKEN` | server | Optional bearer token; enables API auth |
+| `SNAPSHOT_MAX_QUEUE` | server | Max pending jobs (default `8`) |
 | Healthcheck | `/api/health` | Start period 40s |
 
 Useful commands:
@@ -374,6 +390,7 @@ Useful commands:
 | Flag | Behavior |
 |------|----------|
 | *(default)* | Build + start HTTP on `SNAPSHOT_PORT` |
+| `--public` | Publish on `0.0.0.0` (requires `SNAPSHOT_API_TOKEN`) |
 | `--host-nginx --domain NAME` | Localhost publish + host nginx |
 | `--nginx --domain NAME` | Docker nginx sidecar |
 | `--http` | HTTP only (port 80; no TLS) |
@@ -386,8 +403,10 @@ Useful commands:
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `SNAPSHOT_PORT` | `8787` | Host app port (simple / host-nginx) |
-| `SNAPSHOT_BIND` | `0.0.0.0` | Host bind (`127.0.0.1` with `--host-nginx`) |
-| `SNAPSHOT_CORS_ORIGINS` | `*` / `https://domain` | CORS |
+| `SNAPSHOT_BIND` | `127.0.0.1` | Host bind (`--public` → `0.0.0.0`; `--host-nginx` → `127.0.0.1`) |
+| `SNAPSHOT_API_TOKEN` | — | Optional API token; **required** with `--public` |
+| `SNAPSHOT_MAX_QUEUE` | `8` | Max pending capture jobs |
+| `SNAPSHOT_CORS_ORIGINS` | `https://domain` with nginx | CORS allow-list |
 | `SNAPSHOT_IMAGE` | `snapshot:latest` | Image tag |
 | `SNAPSHOT_MEM_LIMIT` | `2g` | App container memory |
 | `SNAPSHOT_HTTP_PORT` / `SNAPSHOT_HTTPS_PORT` | `80` / `443` | Docker-nginx host ports |
@@ -416,9 +435,30 @@ Browser → :443 (snapshot-nginx container)
             → snapshot:8787 (Docker network only)
 ```
 
-Without nginx, the app can publish `0.0.0.0:8787` (HTTP — lab/VPN only).
+Without nginx, the app defaults to **127.0.0.1:8787**. Use `--public` / `SNAPSHOT_BIND=0.0.0.0` only with `SNAPSHOT_API_TOKEN` on trusted networks.
 
 After a **successful** job, uploaded HAR artifacts under the job folder are deleted; `job.json` + `screenshots/` remain (see README).
+
+---
+
+## API authentication
+
+When `SNAPSHOT_API_TOKEN` is set, all `/api/*` routes except `/api/health` and `/api/auth/*` require authentication.
+
+| Client | How |
+|--------|-----|
+| **Browser (web UI)** | POST `/api/auth/session` with `{ "token": "…" }` — sets an **HttpOnly** `snapshot_token` cookie for same-origin requests (including screenshot `<img>` tags). The UI shows a sign-in prompt when auth is required. |
+| **Scripts / curl** | `Authorization: Bearer <token>` or `X-Snapshot-Token: <token>` |
+
+Generate a token:
+
+```bash
+export SNAPSHOT_API_TOKEN="$(openssl rand -hex 32)"
+```
+
+There is **no** build-time frontend token (`VITE_*`) — tokens must not be embedded in the static UI bundle.
+
+Optional extra protection: HTTP basic auth or SSO at nginx.
 
 ---
 
@@ -431,6 +471,8 @@ After a **successful** job, uploaded HAR artifacts under the job folder are dele
 | `SNAPSHOT_DATA_DIR` | server | Job storage root |
 | `SNAPSHOT_WEB_DIST` | server | Path to Vite `dist` |
 | `SNAPSHOT_CORS_ORIGINS` | server | `*` or comma-separated allow-list |
+| `SNAPSHOT_API_TOKEN` | server | Optional bearer token; enables API auth |
+| `SNAPSHOT_MAX_QUEUE` | server | Max pending jobs (default `8`) |
 | `SNAPSHOT_DOMAIN` | nginx-setup | Vhost `server_name` |
 | `SNAPSHOT_NODE_MIN_MAJOR` | vm-deploy / ensure-node | Required Node major; **default `20`** when unset or empty |
 | `SNAPSHOT_SKIP_NODE_INSTALL` | vm-deploy / ensure-node | Disable automatic Node install |
@@ -488,7 +530,8 @@ Data in the Docker volume `snapshot-data` is kept across rebuilds.
 
 ## Security notes
 
-- Prefer **nginx HTTPS** + app on **127.0.0.1** so the Node port is not public.  
-- Snapshot still has **no application auth** — put basic auth / SSO at nginx or keep the host on a private network.  
-- Uploads can be large (up to ~200MB) and trigger headless Chromium — isolate the host accordingly.  
+- Prefer **nginx HTTPS** + app on **127.0.0.1** so the Node port is not public.
+- Set **`SNAPSHOT_API_TOKEN`** for any network-exposed deployment (`--public`, or nginx on the Internet).
+- Default binds are **127.0.0.1** (VM and container) — do not expose `:8787` on a firewall unless you intend to.
+- Uploads can be large (up to ~200MB) and trigger headless Chromium — isolate the host accordingly.
 - Job metadata and screenshots persist on disk until you delete them (`SNAPSHOT_DATA_DIR` / Docker volume).

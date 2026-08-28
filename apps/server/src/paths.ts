@@ -18,11 +18,17 @@ export const HOST = process.env.HOST ?? process.env.SNAPSHOT_HOST ?? '0.0.0.0';
 export const WEB_DIST_DIR =
   process.env.SNAPSHOT_WEB_DIST ?? join(ROOT_DIR, 'apps/web/dist');
 
-/** Comma-separated CORS origins. Empty = reflect request origin (same-host prod OK). */
+/** Comma-separated CORS origins. `*` allows any. Unset in production = same Host only. */
 export function corsOrigins(): string[] | '*' {
   const raw = process.env.SNAPSHOT_CORS_ORIGINS?.trim();
-  if (!raw || raw === '*') return '*';
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (raw === '*') return '*';
+  if (raw) return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return [];
+}
+
+export function corsAllowsProductionSameHost(): boolean {
+  const o = corsOrigins();
+  return o !== '*' && o.length === 0 && process.env.NODE_ENV === 'production';
 }
 
 /** Kept after a successful job; everything else in the job dir is upload input. */

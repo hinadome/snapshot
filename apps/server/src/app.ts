@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { listStrategies, registerBuiltInStrategies } from '@snapshot/core';
@@ -17,9 +18,17 @@ import {
   listJobs,
   toSummary,
 } from './job-store.js';
-import { harPath, screenshotFile, corsOrigins } from './paths.js';
-import { enqueueJob } from './worker.js';
+import { corsAllowsProductionSameHost, corsOrigins, harPath, screenshotFile } from './paths.js';
+import {
+  apiAuthMiddleware,
+  clientErrorMessage,
+  isValidJobId,
+  MAX_LIST_JOBS,
+  MAX_QUEUE_LENGTH,
+} from './security.js';
+import { enqueueJob, isQueueFull } from './worker.js';
 import { mountWebStatic } from './static-web.js';
+import { mountAuthRoutes } from './auth.js';
 
 registerBuiltInStrategies();
 
@@ -32,11 +41,34 @@ app.use(
     origin:
       origins === '*'
         ? (origin) => origin || '*'
-        : origins.length
+        : origins.length > 0
           ? origins
-          : ['http://localhost:5173', 'http://127.0.0.1:5173'],
+          : corsAllowsProductionSameHost()
+            ? (origin, c) => {
+                if (!origin) return '';
+                const host = c.req.header('host')?.split(':')[0];
+                try {
+                  const url = new URL(origin);
+                  if (host && url.hostname === host) return origin;
+                } catch {
+                  /* ignore */
+                }
+                return '';
+              }
+            : ['http://localhost:5173', 'http://127.0.0.1:5173'],
+    credentials: true,
   }),
 );
+
+app.use('*', async (c, next) => {
+  await next();
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'SAMEORIGIN');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+});
+
+mountAuthRoutes(app);
+app.use('/api/*', apiAuthMiddleware);
 
 app.get('/api/health', (c) => c.json({ ok: true }));
 
@@ -46,15 +78,27 @@ app.get('/api/strategies', (c) => {
 
 app.get('/api/jobs', async (c) => {
   const limit = Number(c.req.query('limit') ?? 20);
-  const jobs = await listJobs(Number.isFinite(limit) ? limit : 20);
+  const safeLimit = Number.isFinite(limit)
+    ? Math.min(Math.max(1, limit), MAX_LIST_JOBS)
+    : 20;
+  const jobs = await listJobs(safeLimit);
   return c.json({ jobs });
 });
+
+function requireValidJobId(c: Context, id: string): Response | null {
+  if (isValidJobId(id)) return null;
+  return c.json({ error: 'Invalid job id' }, 400);
+}
 
 async function createJobFromNormalized(
   normalized: NormalizedInput,
   strategyId: string,
   originalFilename: string,
 ) {
+  if (isQueueFull()) {
+    throw new Error('Server queue is full; try again later');
+  }
+
   const id = uuidv4();
   const sourceInfo = normalized.sourceInfo;
   try {
@@ -75,6 +119,15 @@ async function createJobFromNormalized(
 }
 
 app.post('/api/jobs', async (c) => {
+  if (isQueueFull()) {
+    return c.json(
+      {
+        error: `Too many pending jobs (max ${MAX_QUEUE_LENGTH}); try again later`,
+      },
+      429,
+    );
+  }
+
   const contentType = c.req.header('content-type') ?? '';
 
   // JSON / paste: { strategyId?, content? } | { strategyId?, harZipBase64? } | raw HAR
@@ -98,7 +151,6 @@ app.post('/api/jobs', async (c) => {
       if (typeof record.content === 'string' && record.content.trim()) {
         payload = record.content;
       } else if (record.content && typeof record.content === 'object') {
-        // curl often embeds HAR as an object: {"content":{"log":{...}}}
         payload = JSON.stringify(record.content);
       } else if (
         typeof record.harZipBase64 === 'string' &&
@@ -112,7 +164,6 @@ app.post('/api/jobs', async (c) => {
       } else if (record.har && typeof record.har === 'object') {
         payload = JSON.stringify(record.har);
       } else if (record.log && typeof record.log === 'object') {
-        // Raw HAR body (optionally with strategyId sibling — strip for ingest)
         const { strategyId: _s, ...harBody } = record;
         payload = JSON.stringify(
           harBody.log ? harBody : { log: record.log },
@@ -148,8 +199,9 @@ app.post('/api/jobs', async (c) => {
       );
       return c.json({ job: toSummary(job) }, 201);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return c.json({ error: message }, 400);
+      const message = clientErrorMessage(err, 'Could not process upload');
+      const status = /queue is full/i.test(message) ? 429 : 400;
+      return c.json({ error: message }, status);
     }
   }
 
@@ -206,13 +258,16 @@ app.post('/api/jobs', async (c) => {
     const job = await createJobFromNormalized(normalized, strategyId, name);
     return c.json({ job: toSummary(job) }, 201);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return c.json({ error: message }, 400);
+    const message = clientErrorMessage(err, 'Could not process upload');
+    const status = /queue is full/i.test(message) ? 429 : 400;
+    return c.json({ error: message }, status);
   }
 });
 
 app.get('/api/jobs/:id', async (c) => {
   const id = c.req.param('id');
+  const badId = requireValidJobId(c, id);
+  if (badId) return badId;
   let job = getJob(id);
   if (!job) job = (await loadJobFromDisk(id)) ?? undefined;
   if (!job) return c.json({ error: 'Job not found' }, 404);
@@ -221,6 +276,8 @@ app.get('/api/jobs/:id', async (c) => {
 
 app.get('/api/jobs/:id/timeline', async (c) => {
   const id = c.req.param('id');
+  const badId = requireValidJobId(c, id);
+  if (badId) return badId;
   let job = getJob(id);
   if (!job) job = (await loadJobFromDisk(id)) ?? undefined;
   if (!job) return c.json({ error: 'Job not found' }, 404);
@@ -246,6 +303,8 @@ app.get('/api/jobs/:id/timeline', async (c) => {
 
 app.get('/api/jobs/:id/screenshots/:file', async (c) => {
   const id = c.req.param('id');
+  const badId = requireValidJobId(c, id);
+  if (badId) return badId;
   const file = c.req.param('file');
   if (!file.toLowerCase().endsWith('.png')) {
     return c.json({ error: 'Screenshot not found' }, 404);
@@ -260,7 +319,7 @@ app.get('/api/jobs/:id/screenshots/:file', async (c) => {
     return new Response(data, {
       headers: {
         'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=3600',
+        'Cache-Control': 'private, max-age=3600',
       },
     });
   } catch {
@@ -268,5 +327,4 @@ app.get('/api/jobs/:id/screenshots/:file', async (c) => {
   }
 });
 
-// Same-origin UI for production (VM / container). Keep after /api routes.
 mountWebStatic(app);

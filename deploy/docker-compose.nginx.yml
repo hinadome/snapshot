@@ -23,7 +23,9 @@ services:
       HOST: "0.0.0.0"
       SNAPSHOT_DATA_DIR: /data
       SNAPSHOT_WEB_DIST: /app/apps/web/dist
-      SNAPSHOT_CORS_ORIGINS: ${SNAPSHOT_CORS_ORIGINS:-*}
+      SNAPSHOT_CORS_ORIGINS: ${SNAPSHOT_CORS_ORIGINS:-}
+      SNAPSHOT_API_TOKEN: ${SNAPSHOT_API_TOKEN:-}
+      SNAPSHOT_MAX_QUEUE: ${SNAPSHOT_MAX_QUEUE:-8}
       NODE_ENV: production
     volumes:
       - snapshot-data:/data

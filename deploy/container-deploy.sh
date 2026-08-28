@@ -20,7 +20,8 @@ COMPOSE_NGINX_STACK="${ROOT}/deploy/docker-compose.nginx.yml"
 COMPOSE_NGINX_HTTP_STACK="${ROOT}/deploy/docker-compose.nginx-http.yml"
 IMAGE="${SNAPSHOT_IMAGE:-snapshot:latest}"
 PORT="${SNAPSHOT_PORT:-8787}"
-BIND="${SNAPSHOT_BIND:-0.0.0.0}"
+BIND="${SNAPSHOT_BIND:-127.0.0.1}"
+PUBLIC_BIND=0
 MEM_LIMIT="${SNAPSHOT_MEM_LIMIT:-2g}"
 
 MODE=simple # simple | host-nginx | docker-nginx
@@ -30,14 +31,27 @@ TLS_MODE="" # http | certbot | self-signed | custom
 SSL_CERT="${SNAPSHOT_SSL_CERT:-}"
 SSL_KEY="${SNAPSHOT_SSL_KEY:-}"
 
+VALIDATE_DOMAIN_LIB="${ROOT}/deploy/lib/validate-domain.sh"
+
 cd "${ROOT}"
+
+# shellcheck source=deploy/lib/validate-domain.sh
+source "${VALIDATE_DOMAIN_LIB}"
+
+require_valid_domain() {
+  [[ -n "${DOMAIN}" ]] || die "--domain is required"
+  validate_domain "${DOMAIN}" || die "invalid domain: ${DOMAIN}"
+}
 
 usage() {
   cat <<'EOF'
 Snapshot container deploy
 
   ./deploy/container-deploy.sh
-      Build + start app (HTTP on SNAPSHOT_PORT, default 8787)
+      Build + start app on 127.0.0.1:SNAPSHOT_PORT (default 8787)
+
+  ./deploy/container-deploy.sh --public
+      Publish on 0.0.0.0 (exposes API on the network — use with SNAPSHOT_API_TOKEN)
 
   ./deploy/container-deploy.sh --host-nginx --domain NAME --http
       Host nginx HTTP only (port 80); app on 127.0.0.1:8787
@@ -58,7 +72,9 @@ Snapshot container deploy
 
 Environment:
   SNAPSHOT_PORT           Host app port for simple/host-nginx (default 8787)
-  SNAPSHOT_BIND           Bind address (default 0.0.0.0; host-nginx forces 127.0.0.1)
+  SNAPSHOT_BIND           Host bind (default 127.0.0.1; --public uses 0.0.0.0)
+  SNAPSHOT_API_TOKEN      Optional API bearer token (recommended with --public)
+  SNAPSHOT_MAX_QUEUE      Max pending capture jobs (default 8)
   SNAPSHOT_CORS_ORIGINS   CORS allow-list or *
   SNAPSHOT_IMAGE          Image tag (default snapshot:latest)
   SNAPSHOT_MEM_LIMIT      App container memory (default 2g)
@@ -84,6 +100,7 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
     --logs) ACTION=logs ;;
     --status) ACTION=status ;;
     --deploy) ACTION=deploy ;;
+    --public) PUBLIC_BIND=1 ;;
     --host-nginx) MODE=host-nginx ;;
     --nginx) MODE=docker-nginx ;;
     --http) TLS_MODE=http ;;
@@ -127,13 +144,24 @@ need_docker() {
   fi
 }
 
+require_public_token() {
+  if [[ "${PUBLIC_BIND}" -eq 1 ]] && [[ -z "${SNAPSHOT_API_TOKEN:-}" ]]; then
+    die "--public requires SNAPSHOT_API_TOKEN (e.g. export SNAPSHOT_API_TOKEN=\$(openssl rand -hex 32))"
+  fi
+}
+
 compose_env() {
+  if [[ "${PUBLIC_BIND}" -eq 1 ]]; then
+    BIND="0.0.0.0"
+  elif [[ "${MODE}" == "host-nginx" ]]; then
+    BIND="127.0.0.1"
+  fi
   export SNAPSHOT_PORT="${PORT}"
   export SNAPSHOT_BIND="${BIND}"
   export SNAPSHOT_IMAGE="${IMAGE}"
   export SNAPSHOT_MEM_LIMIT="${MEM_LIMIT}"
-  export SNAPSHOT_CORS_ORIGINS="${SNAPSHOT_CORS_ORIGINS:-*}"
-  if [[ -n "${DOMAIN}" && "${SNAPSHOT_CORS_ORIGINS:-*}" == "*" ]]; then
+  export SNAPSHOT_CORS_ORIGINS="${SNAPSHOT_CORS_ORIGINS:-}"
+  if [[ -n "${DOMAIN}" && -z "${SNAPSHOT_CORS_ORIGINS:-}" ]]; then
     if [[ "${TLS_MODE}" == "http" ]]; then
       export SNAPSHOT_CORS_ORIGINS="http://${DOMAIN}"
     else
@@ -156,6 +184,7 @@ compose() {
 }
 
 prepare_docker_nginx_tls() {
+  require_valid_domain
   local conf_dir="${ROOT}/deploy/nginx/docker"
   local cert_dir="${conf_dir}/certs"
   mkdir -p "${cert_dir}"
@@ -212,7 +241,7 @@ prepare_docker_nginx_tls() {
 }
 
 setup_host_nginx() {
-  [[ -n "${DOMAIN}" ]] || die "--host-nginx requires --domain"
+  require_valid_domain
   local args=(--domain "${DOMAIN}" --upstream "127.0.0.1:${PORT}" --skip-bind)
   case "${TLS_MODE}" in
     http)
@@ -320,6 +349,8 @@ cmd_status() {
 }
 
 need_docker
+
+require_public_token
 
 # Infer stack for status/logs/down when flags omitted
 if [[ "${MODE}" == "simple" ]]; then
