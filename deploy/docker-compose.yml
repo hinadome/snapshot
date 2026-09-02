@@ -26,6 +26,7 @@ services:
       HOST: "0.0.0.0"
       SNAPSHOT_DATA_DIR: /data
       SNAPSHOT_WEB_DIST: /app/apps/web/dist
+      # API CORS (browser → Snapshot). HAR-replay CORS is per-job (UI Enforce CORS).
       SNAPSHOT_CORS_ORIGINS: ${SNAPSHOT_CORS_ORIGINS:-}
       SNAPSHOT_API_TOKEN: ${SNAPSHOT_API_TOKEN:-}
       SNAPSHOT_MAX_QUEUE: ${SNAPSHOT_MAX_QUEUE:-8}

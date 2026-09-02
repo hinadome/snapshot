@@ -75,6 +75,9 @@ Options:
 
 Environment equivalents: SNAPSHOT_DOMAIN, SNAPSHOT_CERTBOT_EMAIL,
   SNAPSHOT_SSL_CERT, SNAPSHOT_SSL_KEY, PORT / SNAPSHOT_PORT
+
+Note: updates SNAPSHOT_CORS_ORIGINS in deploy/snapshot.env to this site's
+  origin (API CORS for browser→Snapshot). HAR-replay CORS is a per-job UI setting.
 EOF
 }
 

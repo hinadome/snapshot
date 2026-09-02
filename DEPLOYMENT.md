@@ -222,7 +222,7 @@ journalctl -u snapshot -f
 | `SNAPSHOT_MAX_QUEUE` | `8` | Max pending capture jobs |
 | `SNAPSHOT_DATA_DIR` | `<repo>/data` | Jobs + screenshots |
 | `SNAPSHOT_WEB_DIST` | `<repo>/apps/web/dist` | Built Vite UI |
-| `SNAPSHOT_CORS_ORIGINS` | `*` / `https://<domain>` with nginx | CORS allow-list |
+| `SNAPSHOT_CORS_ORIGINS` | `*` / `https://<domain>` with nginx | **API** CORS allow-list (browser → Snapshot REST). Not HAR-replay CORS. |
 | `SNAPSHOT_DOMAIN` | — | Hostname for nginx vhost |
 | `SNAPSHOT_CERTBOT_EMAIL` | — | Let's Encrypt account email |
 | `SNAPSHOT_SERVICE_NAME` | `snapshot` | systemd unit name |
@@ -406,7 +406,7 @@ Useful commands:
 | `SNAPSHOT_BIND` | `127.0.0.1` | Host bind (`--public` → `0.0.0.0`; `--host-nginx` → `127.0.0.1`) |
 | `SNAPSHOT_API_TOKEN` | — | Optional API token; **required** with `--public` |
 | `SNAPSHOT_MAX_QUEUE` | `8` | Max pending capture jobs |
-| `SNAPSHOT_CORS_ORIGINS` | `https://domain` with nginx | CORS allow-list |
+| `SNAPSHOT_CORS_ORIGINS` | `https://domain` with nginx | **API** CORS allow-list (not HAR replay) |
 | `SNAPSHOT_IMAGE` | `snapshot:latest` | Image tag |
 | `SNAPSHOT_MEM_LIMIT` | `2g` | App container memory |
 | `SNAPSHOT_HTTP_PORT` / `SNAPSHOT_HTTPS_PORT` | `80` / `443` | Docker-nginx host ports |
@@ -462,6 +462,19 @@ Optional extra protection: HTTP basic auth or SSO at nginx.
 
 ---
 
+## HAR replay CORS vs API CORS
+
+| Setting | What it controls |
+|---------|------------------|
+| **`SNAPSHOT_CORS_ORIGINS`** (deploy env) | Whether a browser on another origin can call Snapshot’s `/api/*` endpoints |
+| **Enforce CORS** (per job in the UI / `enforceCors` on `POST /api/jobs` / CLI `--no-cors`) | Whether Playwright blocks cross-origin HAR responses that fail CORS during **screenshot** capture |
+
+Deploy scripts only configure **API** CORS. HAR-replay CORS is a product default (`true`); operators do not need an env var for it. Rebuild/redeploy the app to pick up the feature; no nginx change required.
+
+See [README — HAR replay CORS](README.md#har-replay-cors-screenshots).
+
+---
+
 ## Configuration reference
 
 | Variable | Used by | Description |
@@ -470,7 +483,7 @@ Optional extra protection: HTTP basic auth or SSO at nginx.
 | `HOST` / `SNAPSHOT_HOST` | server | Bind address (`127.0.0.1` behind nginx) |
 | `SNAPSHOT_DATA_DIR` | server | Job storage root |
 | `SNAPSHOT_WEB_DIST` | server | Path to Vite `dist` |
-| `SNAPSHOT_CORS_ORIGINS` | server | `*` or comma-separated allow-list |
+| `SNAPSHOT_CORS_ORIGINS` | server | **API** CORS: `*` or comma-separated allow-list (browser → Snapshot). Unrelated to HAR-replay CORS. |
 | `SNAPSHOT_API_TOKEN` | server | Optional bearer token; enables API auth |
 | `SNAPSHOT_MAX_QUEUE` | server | Max pending jobs (default `8`) |
 | `SNAPSHOT_DOMAIN` | nginx-setup | Vhost `server_name` |
@@ -520,7 +533,8 @@ Data in the Docker volume `snapshot-data` is kept across rebuilds.
 | App still on public `:8787` (container) | Use `--host-nginx` or `SNAPSHOT_BIND=127.0.0.1` |
 | Health unreachable | Check port/firewall; `journalctl -u snapshot -f` or `./deploy/container-deploy.sh --logs` |
 | Permission denied on `/data` | Entrypoint chowns as root then `gosu pwuser`; recreate volume if stuck |
-| CORS errors with a separate UI host | Set `SNAPSHOT_CORS_ORIGINS=https://your-ui.example` |
+| CORS errors with a separate UI host | Set `SNAPSHOT_CORS_ORIGINS=https://your-ui.example` (API CORS only) |
+| Screenshots show data CORS blocked in the browser | Keep **Enforce CORS** on; check Notes for blocked URLs. Toggle off / `--no-cors` only to compare |
 | `nginx -t` failed during setup | Snapshot site not enabled; fix the rendered file — other sites unchanged |
 | Wrong site / default server answers | Ensure DNS `server_name` is unique; check `nginx -T \| grep server_name` |
 | Certbot failure | Port 80 reachable from Internet; DNS A/AAAA points at this VM |
@@ -533,5 +547,6 @@ Data in the Docker volume `snapshot-data` is kept across rebuilds.
 - Prefer **nginx HTTPS** + app on **127.0.0.1** so the Node port is not public.
 - Set **`SNAPSHOT_API_TOKEN`** for any network-exposed deployment (`--public`, or nginx on the Internet).
 - Default binds are **127.0.0.1** (VM and container) — do not expose `:8787` on a firewall unless you intend to.
+- `SNAPSHOT_CORS_ORIGINS` only affects API access from other origins; HAR screenshot CORS is controlled in the UI (**Enforce CORS**).
 - Uploads can be large (up to ~200MB) and trigger headless Chromium — isolate the host accordingly.
 - Job metadata and screenshots persist on disk until you delete them (`SNAPSHOT_DATA_DIR` / Docker volume).

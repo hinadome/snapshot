@@ -102,6 +102,7 @@ async function processJob(jobId: string): Promise<void> {
       {
         harDir: dir,
         headless: true,
+        enforceCors: job.enforceCors !== false,
         onProgress: async (current, total, label) => {
           await updateJob(jobId, {
             progress: {
@@ -119,7 +120,14 @@ async function processJob(jobId: string): Promise<void> {
     });
 
     const captureWarnings = results.flatMap((r) =>
-      r.warnings.map((w) => `[${r.id}] ${w.replace(/\s+/g, ' ').trim()}`),
+      r.warnings.map((w) => {
+        const lines = w.split('\n').map((line) => line.trim()).filter(Boolean);
+        if (lines.length <= 1) return `[${r.id}] ${lines[0] ?? w.trim()}`;
+        const [summary, ...rest] = lines;
+        return [`[${r.id}] ${summary}`, ...rest.map((line) => `  ${line}`)].join(
+          '\n',
+        );
+      }),
     );
 
     await updateJob(jobId, {

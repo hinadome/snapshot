@@ -75,7 +75,8 @@ Environment:
   SNAPSHOT_BIND           Host bind (default 127.0.0.1; --public uses 0.0.0.0)
   SNAPSHOT_API_TOKEN      Optional API bearer token (recommended with --public)
   SNAPSHOT_MAX_QUEUE      Max pending capture jobs (default 8)
-  SNAPSHOT_CORS_ORIGINS   CORS allow-list or *
+  SNAPSHOT_CORS_ORIGINS   API CORS allow-list (browser→Snapshot REST) or *
+                          (not HAR-replay CORS — use UI Enforce CORS / enforceCors)
   SNAPSHOT_IMAGE          Image tag (default snapshot:latest)
   SNAPSHOT_MEM_LIMIT      App container memory (default 2g)
   SNAPSHOT_HTTP_PORT      Docker-nginx host HTTP port (default 80)

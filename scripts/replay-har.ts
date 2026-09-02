@@ -38,6 +38,7 @@ Options:
   --har <path>      Explicit .har path
   --file <path>     Auto-detect input format
   --headless        Headless browser (default for batch capture)
+  --no-cors         Disable browser-faithful CORS during replay (serve all HAR hits)
   --out <dir>       Screenshot output directory (default: ./har-screenshots)
   -h, --help        Show help
 
@@ -51,6 +52,7 @@ function parseArgs(argv: string[]) {
     path: null as string | null,
     strategyId: 'document-navigation',
     headless: true,
+    enforceCors: true,
     out: join(process.cwd(), 'har-screenshots'),
   };
 
@@ -61,6 +63,7 @@ function parseArgs(argv: string[]) {
     else if (a === '--scroll') opts.strategyId = 'scroll-viewport';
     else if (a === '--har' || a === '--file') opts.path = argv[++i] ?? usage();
     else if (a === '--headless') opts.headless = true;
+    else if (a === '--no-cors') opts.enforceCors = false;
     else if (a === '--out') opts.out = resolve(argv[++i] ?? usage());
     else if (!a.startsWith('-')) opts.path = a;
     else usage();
@@ -87,6 +90,7 @@ async function main() {
       `  entries: ${input.sourceInfo.entryCount} (bodies: ${input.sourceInfo.bodyCoveragePct}%)`,
     );
     console.log(`  strategy: ${opts.strategyId}`);
+    console.log(`  CORS: ${opts.enforceCors ? 'enforced' : 'off (--no-cors)'}`);
 
     const raw = parseHarJson(readFileSync(input.harPath, 'utf8'));
     const index = buildHarIndex(raw);
@@ -107,6 +111,7 @@ async function main() {
       {
         harDir: input.harDir,
         headless: opts.headless,
+        enforceCors: opts.enforceCors,
         onProgress: (_c, _t, label) => {
           console.log(`… ${label}`);
         },
@@ -116,7 +121,9 @@ async function main() {
     for (const result of results) {
       console.log(`→ ${result.label}`);
       if (result.warnings.length) {
-        for (const w of result.warnings.slice(0, 2)) console.warn(`  warn: ${w}`);
+        for (const w of result.warnings) {
+          for (const line of w.split('\n')) console.warn(`  warn: ${line}`);
+        }
       }
       if (result.error) console.error(`  error: ${result.error}`);
       else console.log(`  saved: ${result.screenshotPath}`);

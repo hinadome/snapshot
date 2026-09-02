@@ -39,6 +39,29 @@ function kindClass(kind: string): string {
   return 'kind-navigation';
 }
 
+function WarningList({ warnings }: { warnings: string[] }) {
+  return (
+    <ul>
+      {warnings.map((w, i) => {
+        const lines = w.split('\n').map((line) => line.trim()).filter(Boolean);
+        const [summary, ...details] = lines;
+        return (
+          <li key={`${i}-${summary?.slice(0, 48) ?? ''}`}>
+            <span className="warn-summary">{summary}</span>
+            {details.length > 0 ? (
+              <ul className="warn-urls">
+                {details.map((line, j) => (
+                  <li key={`${j}-${line}`}>{line}</li>
+                ))}
+              </ul>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function shortJobLabel(job: JobSummary): string {
   const when = new Date(job.updatedAt || job.createdAt).toLocaleString();
   const docs = job.harStats?.documentCount;
@@ -49,6 +72,7 @@ function shortJobLabel(job: JobSummary): string {
 export function App() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [strategyId, setStrategyId] = useState('document-navigation');
+  const [enforceCors, setEnforceCors] = useState(true);
   const [file, setFile] = useState<File | null>(null);
   const [paste, setPaste] = useState('');
   const [showPaste, setShowPaste] = useState(false);
@@ -205,8 +229,8 @@ export function App() {
     setSelectedId(null);
     try {
       const created = file
-        ? await createJob(file, strategyId)
-        : await createJobFromPaste(paste.trim(), strategyId);
+        ? await createJob(file, strategyId, enforceCors)
+        : await createJobFromPaste(paste.trim(), strategyId, enforceCors);
       setJob(created);
       refreshRecent();
     } catch (e: unknown) {
@@ -360,6 +384,22 @@ export function App() {
               )}
             </select>
           </div>
+          <div className="field field-toggle">
+            <label htmlFor="enforce-cors">
+              <input
+                id="enforce-cors"
+                type="checkbox"
+                checked={enforceCors}
+                onChange={(e) => setEnforceCors(e.target.checked)}
+              />
+              Enforce CORS
+            </label>
+            <span className="field-hint">
+              {enforceCors
+                ? 'Browser-faithful — blocks cross-origin responses without valid CORS headers'
+                : 'Off — serves all matching HAR responses (compare screenshots)'}
+            </span>
+          </div>
           <button
             className="btn"
             type="button"
@@ -403,6 +443,9 @@ export function App() {
           <div className="progress">
             <div className="meta">
               <span>status: {job.status}</span>
+              <span>
+                CORS: {job.enforceCors !== false ? 'enforced' : 'off'}
+              </span>
               <span>{job.progress.message}</span>
               {job.harStats ? (
                 <span>
@@ -426,11 +469,7 @@ export function App() {
             {job.warnings.length > 0 ? (
               <div className="warnings">
                 <strong>Notes</strong>
-                <ul>
-                  {job.warnings.slice(0, 8).map((w) => (
-                    <li key={w}>{w}</li>
-                  ))}
-                </ul>
+                <WarningList warnings={job.warnings.slice(0, 8)} />
               </div>
             ) : null}
             {job.error ? <div className="error">{job.error}</div> : null}
@@ -517,11 +556,7 @@ export function App() {
                 </div>
                 {selected.warnings.length > 0 ? (
                   <div className="warnings">
-                    <ul>
-                      {selected.warnings.map((w) => (
-                        <li key={w}>{w}</li>
-                      ))}
-                    </ul>
+                    <WarningList warnings={selected.warnings} />
                   </div>
                 ) : null}
                 {selected.error ? (

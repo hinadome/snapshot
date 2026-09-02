@@ -51,10 +51,12 @@ export async function fetchStrategies(): Promise<StrategyInfo[]> {
 export async function createJob(
   file: File,
   strategyId: string,
+  enforceCors = true,
 ): Promise<JobSummary> {
   const form = new FormData();
   form.append('file', file);
   form.append('strategyId', strategyId);
+  form.append('enforceCors', enforceCors ? 'true' : 'false');
   const data = await json<{ job: JobSummary }>(
     await fetchWithAuth(`${BASE}/api/jobs`, { method: 'POST', body: form }),
   );
@@ -65,12 +67,13 @@ export async function createJob(
 export async function createJobFromPaste(
   content: string,
   strategyId: string,
+  enforceCors = true,
 ): Promise<JobSummary> {
   const data = await json<{ job: JobSummary }>(
     await fetchWithAuth(`${BASE}/api/jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, strategyId }),
+      body: JSON.stringify({ content, strategyId, enforceCors }),
     }),
   );
   return data.job;

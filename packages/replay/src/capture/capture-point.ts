@@ -7,10 +7,21 @@ export type CaptureOptions = {
   harDir?: string;
   headless?: boolean;
   offline?: boolean;
+  /** When false, replay all HAR responses without CORS enforcement. Default true. */
+  enforceCors?: boolean;
 };
 
 function oneLine(message: string): string {
   return message.replace(/\s+/g, ' ').trim();
+}
+
+/** Summary + one request per line (avoids a single giant unbroken string in the UI). */
+export function formatRequestListWarning(
+  summary: string,
+  requests: string[],
+): string {
+  if (requests.length === 0) return summary;
+  return `${summary}\n${requests.join('\n')}`;
 }
 
 async function waitForRender(page: import('playwright').Page): Promise<void> {
@@ -47,9 +58,12 @@ export async function captureFromHar(
   });
 
   try {
-    const failed: string[] = [];
-    await attachHarRouter(context, table, (url, method) => {
-      failed.push(`${method} ${url}`);
+    const harMisses: string[] = [];
+    const corsBlocks: string[] = [];
+    await attachHarRouter(context, table, {
+      enforceCors: options.enforceCors,
+      onMiss: (u, m) => harMisses.push(`${m} ${u}`),
+      onCorsBlock: (u, m) => corsBlocks.push(`${m} ${u}`),
     });
 
     const page = await context.newPage();
@@ -71,10 +85,21 @@ export async function captureFromHar(
       }
     }
 
-    if (failed.length > 0) {
-      const sample = failed.slice(0, 5).join('; ');
+    if (corsBlocks.length > 0) {
       warnings.push(
-        `${failed.length} request(s) not served from HAR. Missing assets, dynamic URLs (tokens), or WebSockets often cause incomplete pages. e.g. ${sample}`,
+        formatRequestListWarning(
+          `${corsBlocks.length} cross-origin request(s) blocked by CORS during replay (matching browser behavior)`,
+          corsBlocks,
+        ),
+      );
+    }
+
+    if (harMisses.length > 0) {
+      warnings.push(
+        formatRequestListWarning(
+          `${harMisses.length} request(s) not served from HAR. Missing assets, dynamic URLs (tokens), or WebSockets often cause incomplete pages`,
+          harMisses,
+        ),
       );
     }
 
@@ -92,7 +117,7 @@ export async function captureFromHar(
       label: point.label,
       kind: point.kind,
       screenshotPath: outPath,
-      warnings: warnings.map(oneLine),
+      warnings,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -103,7 +128,7 @@ export async function captureFromHar(
       label: point.label,
       kind: point.kind,
       screenshotPath: outPath,
-      warnings: warnings.map(oneLine),
+      warnings,
       error: oneLine(message),
     };
   } finally {

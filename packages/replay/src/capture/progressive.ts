@@ -3,6 +3,7 @@ import type { Page } from 'playwright';
 import { attachHarRouter, loadHarRouteTable } from '../router/har-router.js';
 import { getBrowser, DEFAULT_VIEWPORT } from './browser.js';
 import { writeScreenshot } from './scroll.js';
+import { formatRequestListWarning } from './capture-point.js';
 
 function oneLine(message: string): string {
   return message.replace(/\s+/g, ' ').trim();
@@ -86,6 +87,7 @@ export async function captureNavigationGroup(
   options: {
     harDir?: string;
     headless?: boolean;
+    enforceCors?: boolean;
   } = {},
 ): Promise<CaptureResult[]> {
   if (points.length === 0) return [];
@@ -101,6 +103,7 @@ export async function captureNavigationGroup(
         screenshotPath: getScreenshotPath(points[0]!.id),
         harDir: options.harDir,
         headless: options.headless,
+        enforceCors: options.enforceCors,
       }),
     ];
   }
@@ -122,9 +125,12 @@ export async function captureNavigationGroup(
   const results: CaptureResult[] = [];
 
   try {
-    const failed: string[] = [];
-    await attachHarRouter(context, table, (u, method) => {
-      failed.push(`${method} ${u}`);
+    const harMisses: string[] = [];
+    const corsBlocks: string[] = [];
+    await attachHarRouter(context, table, {
+      enforceCors: options.enforceCors,
+      onMiss: (u, m) => harMisses.push(`${m} ${u}`),
+      onCorsBlock: (u, m) => corsBlocks.push(`${m} ${u}`),
     });
     const page = await context.newPage();
 
@@ -251,10 +257,20 @@ export async function captureNavigationGroup(
       }
     }
 
-    if (failed.length > 0) {
-      const sample = failed.slice(0, 5).join('; ');
-      const miss = oneLine(
-        `${failed.length} request(s) not served from HAR. e.g. ${sample}`,
+    if (corsBlocks.length > 0) {
+      const corsWarn = formatRequestListWarning(
+        `${corsBlocks.length} cross-origin request(s) blocked by CORS during replay`,
+        corsBlocks,
+      );
+      for (const r of results) {
+        r.warnings.push(corsWarn);
+      }
+    }
+
+    if (harMisses.length > 0) {
+      const miss = formatRequestListWarning(
+        `${harMisses.length} request(s) not served from HAR`,
+        harMisses,
       );
       for (const r of results) {
         r.warnings.push(miss);
@@ -273,6 +289,8 @@ export async function captureNavigationGroup(
 export type PlanCaptureOptions = {
   harDir?: string;
   headless?: boolean;
+  /** When false, replay all HAR responses without CORS enforcement. Default true. */
+  enforceCors?: boolean;
   onProgress?: (
     current: number,
     total: number,

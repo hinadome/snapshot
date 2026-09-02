@@ -117,6 +117,8 @@ export type JobSummary = {
   id: string;
   status: JobStatus;
   strategyId: string;
+  /** When true (default), cross-origin responses must pass CORS checks during replay. */
+  enforceCors?: boolean;
   createdAt: string;
   updatedAt: string;
   progress: {

@@ -13,6 +13,7 @@ export type JobRecord = {
   id: string;
   status: JobStatus;
   strategyId: string;
+  enforceCors: boolean;
   createdAt: string;
   updatedAt: string;
   progress: {
@@ -37,6 +38,7 @@ export function toSummary(job: JobRecord): JobSummary {
     id: job.id,
     status: job.status,
     strategyId: job.strategyId,
+    enforceCors: job.enforceCors !== false,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     progress: job.progress,
@@ -50,6 +52,7 @@ export function toSummary(job: JobRecord): JobSummary {
 export async function createJob(params: {
   id: string;
   strategyId: string;
+  enforceCors?: boolean;
   originalFilename: string;
   harBytes: Buffer;
   harSource?: HarSourceInfo;
@@ -63,6 +66,7 @@ export async function createJob(params: {
     id: params.id,
     status: 'queued',
     strategyId: params.strategyId,
+    enforceCors: params.enforceCors !== false,
     createdAt: now,
     updatedAt: now,
     progress: { current: 0, total: 0, message: 'Queued' },

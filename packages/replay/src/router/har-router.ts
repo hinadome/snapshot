@@ -2,6 +2,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import type { BrowserContext, Route } from 'playwright';
+import {
+  corsResponseAllowed,
+  crossOriginRequestNeedsCors,
+  harEntryBlockedInCapture,
+} from './cors.js';
 
 type HarHeader = { name: string; value: string };
 
@@ -27,6 +32,13 @@ export type HarEntry = {
     content?: HarContent;
     redirectURL?: string;
   };
+  /** Chrome / Playwright: net::ERR_* when the browser blocked or failed the request */
+  _failureText?: string;
+};
+
+export type HarRouterCallbacks = {
+  onMiss?: (url: string, method: string) => void;
+  onCorsBlock?: (url: string, method: string) => void;
 };
 
 type HarFile = {
@@ -230,15 +242,38 @@ function headersToObject(
   return out;
 }
 
+export type HarRouterOptions = {
+  /** When false, serve HAR responses without CORS checks (legacy replay). Default true. */
+  enforceCors?: boolean;
+  onMiss?: (url: string, method: string) => void;
+  onCorsBlock?: (url: string, method: string) => void;
+};
+
+function resolveHarRouterOptions(
+  input?: HarRouterOptions | ((url: string, method: string) => void),
+): Required<Pick<HarRouterOptions, 'enforceCors'>> & HarRouterOptions {
+  if (typeof input === 'function') {
+    return { enforceCors: true, onMiss: input };
+  }
+  return {
+    enforceCors: input?.enforceCors !== false,
+    onMiss: input?.onMiss,
+    onCorsBlock: input?.onCorsBlock,
+  };
+}
+
 export async function attachHarRouter(
   context: BrowserContext,
   table: HarRouteTable,
-  onMiss?: (url: string, method: string) => void,
+  options?: HarRouterOptions | ((url: string, method: string) => void),
 ): Promise<void> {
+  const { enforceCors, onMiss, onCorsBlock } = resolveHarRouterOptions(options);
+
   await context.route('**/*', async (route: Route) => {
     const req = route.request();
     const method = req.method();
     const url = req.url();
+    const pageUrl = req.frame().url() || url;
 
     if (
       url.startsWith('data:') ||
@@ -256,6 +291,12 @@ export async function attachHarRouter(
       return;
     }
 
+    if (enforceCors && harEntryBlockedInCapture(entry)) {
+      onCorsBlock?.(url, method);
+      await route.abort('accessdenied');
+      return;
+    }
+
     const status = entry.response.status ?? 200;
     const redirectURL = entry.response.redirectURL?.trim();
     if (status >= 300 && status < 400 && redirectURL) {
@@ -270,6 +311,27 @@ export async function attachHarRouter(
     const content = entry.response.content ?? {};
     const body = bodyFromContent(content, table.harDir);
     const headers = headersToObject(entry.response.headers, content.mimeType);
+
+    const originHeader = await req.headerValue('origin');
+    const needsCors = crossOriginRequestNeedsCors({
+      requestUrl: url,
+      pageUrl,
+      method,
+      resourceType: req.resourceType(),
+      originHeader,
+      secFetchMode: await req.headerValue('sec-fetch-mode'),
+    });
+
+    if (enforceCors && needsCors) {
+      const withCredentials = Boolean(await req.headerValue('cookie'));
+      if (
+        !corsResponseAllowed(originHeader, method, headers, withCredentials)
+      ) {
+        onCorsBlock?.(url, method);
+        await route.abort('accessdenied');
+        return;
+      }
+    }
 
     try {
       await route.fulfill({

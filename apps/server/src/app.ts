@@ -90,10 +90,21 @@ function requireValidJobId(c: Context, id: string): Response | null {
   return c.json({ error: 'Invalid job id' }, 400);
 }
 
+function parseEnforceCors(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    return v !== 'false' && v !== '0' && v !== 'off' && v !== 'no';
+  }
+  return true;
+}
+
 async function createJobFromNormalized(
   normalized: NormalizedInput,
   strategyId: string,
   originalFilename: string,
+  enforceCors: boolean,
 ) {
   if (isQueueFull()) {
     throw new Error('Server queue is full; try again later');
@@ -110,6 +121,7 @@ async function createJobFromNormalized(
   const job = await createJob({
     id,
     strategyId,
+    enforceCors,
     originalFilename,
     harBytes: await readFile(harPath(id)),
     harSource: sourceInfo,
@@ -136,6 +148,7 @@ app.post('/api/jobs', async (c) => {
     contentType.includes('text/plain')
   ) {
     let strategyId = 'document-navigation';
+    let enforceCors = true;
     let payload = '';
 
     if (contentType.includes('application/json')) {
@@ -146,6 +159,9 @@ app.post('/api/jobs', async (c) => {
       const record = body as Record<string, unknown>;
       if (typeof record.strategyId === 'string' && record.strategyId) {
         strategyId = record.strategyId;
+      }
+      if ('enforceCors' in record) {
+        enforceCors = parseEnforceCors(record.enforceCors);
       }
 
       if (typeof record.content === 'string' && record.content.trim()) {
@@ -196,6 +212,7 @@ app.post('/api/jobs', async (c) => {
         normalized,
         strategyId,
         'paste.json',
+        enforceCors,
       );
       return c.json({ job: toSummary(job) }, 201);
     } catch (err) {
@@ -221,6 +238,7 @@ app.post('/api/jobs', async (c) => {
     typeof form['strategyId'] === 'string' && form['strategyId']
       ? form['strategyId']
       : 'document-navigation';
+  const enforceCors = parseEnforceCors(form['enforceCors']);
 
   if (!file || typeof file === 'string') {
     return c.json({ error: 'Missing file field' }, 400);
@@ -255,7 +273,7 @@ app.post('/api/jobs', async (c) => {
 
   try {
     const normalized = openInputBuffer(buf, name);
-    const job = await createJobFromNormalized(normalized, strategyId, name);
+    const job = await createJobFromNormalized(normalized, strategyId, name, enforceCors);
     return c.json({ job: toSummary(job) }, 201);
   } catch (err) {
     const message = clientErrorMessage(err, 'Could not process upload');

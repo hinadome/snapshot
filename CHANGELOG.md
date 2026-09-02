@@ -11,12 +11,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/). Versioning foll
 ### Added
 - Production deploy: `deploy/vm-deploy.sh` (VM + systemd), `deploy/container-deploy.sh` (Docker Compose), `deploy/Dockerfile`, and [DEPLOYMENT.md](DEPLOYMENT.md)
 - API serves built web UI on the same port in production (`SNAPSHOT_WEB_DIST`); configurable `HOST` bind (`127.0.0.1` behind nginx)
-- Configurable CORS via `SNAPSHOT_CORS_ORIGINS`
+- Configurable **API** CORS via `SNAPSHOT_CORS_ORIGINS` (browser → Snapshot REST; not HAR replay)
 - Optional API auth via `SNAPSHOT_API_TOKEN` (Bearer header or HttpOnly session cookie from `POST /api/auth/session`)
 - Job ID validation, queue depth cap (`SNAPSHOT_MAX_QUEUE`), sanitized API errors, security response headers
 - nginx front: `deploy/nginx-setup.sh` — **additive** vhost; `--http` (port 80), Let's Encrypt, self-signed, or custom certs; rate-limit zone install
 - Container parity: `--host-nginx` / `--nginx` with `--http` or HTTPS; `--public` (requires token); Compose `init`, `mem_limit`, default `SNAPSHOT_BIND=127.0.0.1`
 - VM Node auto-install via `deploy/lib/ensure-node.sh` (default major `20`); VM `--public` flag
+- **Browser-faithful HAR CORS** during Playwright replay (`packages/replay` CORS checks + blocked `status: 0` / `_failureText` entries)
+- Per-job **Enforce CORS** toggle in the web UI; `enforceCors` on `POST /api/jobs` (multipart/JSON); CLI `pnpm replay -- --no-cors`
+- Full blocked/miss URL lists in job Notes (scrollable UI; one request per line)
+
+### Changed
+- Default bind for VM/container deploys is `127.0.0.1`; `--public` requires `SNAPSHOT_API_TOKEN`
+- Screenshots aim to match what the user saw when CORS blocked cross-origin APIs (toggle off to compare legacy “serve everything” behavior)
 
 ---
 

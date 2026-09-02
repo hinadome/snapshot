@@ -49,6 +49,7 @@ CLI (same engine):
 pnpm replay -- path/to/capture.har
 pnpm replay -- --strategy page-timing path/to/session.har.zip
 pnpm replay -- --scroll --out ./har-screenshots path/to/capture.har
+pnpm replay -- --no-cors path/to/capture.har   # serve all HAR hits (A/B vs default CORS)
 ```
 
 ---
@@ -56,6 +57,7 @@ pnpm replay -- --scroll --out ./har-screenshots path/to/capture.har
 ## Features
 
 - **Offline reconstruction** from HAR / Playwright zip via a shared fulfill router  
+- **Browser-faithful CORS** — cross-origin `fetch`/XHR blocked when HAR CORS headers would fail in a real browser (toggleable)  
 - **Pluggable strategies** — one API/UI dropdown for navigation, load milestones, or scroll frames  
 - **Timeline** — ordered screenshots with kind badges and filters (`all` / `navigation` / `milestone` / `periodic`)  
 - **Recent jobs** — reopen completed runs without re-uploading  
@@ -111,6 +113,36 @@ Upload / paste
 ```
 
 Multi-stage points for the **same URL** share one browser session (progressive load / scroll).
+
+### HAR replay CORS (screenshots)
+
+By default (`enforceCors: true`), during offline replay Snapshot **blocks** cross-origin requests that a real browser would refuse:
+
+- HAR entries with `status: 0` or CORS-related `_failureText`
+- Cross-origin `fetch` / XHR / `eventsource` (and `crossorigin` assets) without a matching `Access-Control-Allow-Origin`
+
+So screenshots match what the user could see — not “phantom” API data that CORS would hide. Job **Notes** list every blocked URL (scrollable in the UI).
+
+| Mode | UI | CLI | Behavior |
+|------|----|-----|----------|
+| **On (default)** | **Enforce CORS** checked | (default) | Browser-faithful; may leave SPA shells empty |
+| **Off** | Uncheck **Enforce CORS** | `--no-cors` | Serve all matching HAR responses (legacy / compare) |
+
+This is **not** the same as `SNAPSHOT_CORS_ORIGINS` (that only controls whether browsers can call Snapshot’s REST API from another origin). See [DEPLOYMENT.md](DEPLOYMENT.md).
+
+Inspect a URL in a HAR (example):
+
+```bash
+jq '
+  .log.entries[]
+  | select(
+      (.request.method | ascii_upcase) == "POST"
+      and (.request.url | startswith("https://www.bestbuy.com/gateway/graphql"))
+    )
+  | {status: .response.status, failure: ._failureText,
+     cors: [.response.headers[]? | select(.name | test("access-control"; "i"))]}
+' path/to/capture.har
+```
 
 The CLI (`pnpm replay`) writes screenshots to an output dir and does **not** delete the source HAR — cleanup applies only to API jobs under `data/jobs/`.
 
@@ -222,24 +254,26 @@ Ingest may use short-lived OS temp dirs (`/tmp/snapshot-*`); those are removed a
 
 ### Create job — multipart
 
-`file` + optional `strategyId` (default `document-navigation`).
+`file` + optional `strategyId` (default `document-navigation`) + optional `enforceCors` (`true`/`false`, default `true`).
 
 ### Create job — JSON
 
-`content` may be a **string or object** (object form is what you get from `curl` + `jq`):
+`content` may be a **string or object** (object form is what you get from `curl` + `jq`). Optional `enforceCors` (boolean, default `true`):
 
 ```bash
 curl -s -X POST http://localhost:8787/api/jobs \
   -H 'Content-Type: application/json' \
-  -d "{\"strategyId\":\"document-navigation\",\"content\":$(jq -c . packages/core/fixtures/sample.har.json)}"
+  -d "{\"strategyId\":\"document-navigation\",\"enforceCors\":true,\"content\":$(jq -c . packages/core/fixtures/sample.har.json)}"
 ```
 
 Also supported: `{ "harZipBase64": "…" }`, `{ "har": "…" }`, or a raw HAR (`log`) merged with `strategyId`:
 
 ```bash
-jq -c '{strategyId:"document-navigation"} + .' packages/core/fixtures/sample.har.json \
+jq -c '{strategyId:"document-navigation",enforceCors:true} + .' packages/core/fixtures/sample.har.json \
   | curl -s -X POST http://localhost:8787/api/jobs -H 'Content-Type: application/json' -d @-
 ```
+
+Job summaries include `enforceCors`. Timeline **Notes** list blocked CORS / HAR-miss URLs when enforcement is on.
 
 When `SNAPSHOT_API_TOKEN` is set, pass `Authorization: Bearer <token>` (or sign in via the web UI — see below).
 
@@ -327,11 +361,12 @@ HAR replay is **offline network mocking**, not a full browser time machine:
 | HAR without response bodies | Blank / broken pages |
 | Assets never recorded in the HAR | Missing CSS/JS; incomplete layout |
 | Dynamic query tokens | Pathname fallback helps; not perfect |
+| Cross-origin `fetch`/XHR without CORS headers in HAR | Blocked during replay (browser-faithful); UI may stay empty |
 | SPA needing clicks after load | Only the initial document |
 | Captcha / login | Often incomplete offline |
 | Iframes / ads | Not separate timeline entries (main frame only) |
 
-Job **warnings** list requests that could not be served from the HAR. A few analytics misses are normal; many misses on first-party JS/CSS usually mean an incomplete export.
+Job **Notes** list HAR misses and (when CORS is enforced) every blocked cross-origin request. A few analytics misses are normal; many misses on first-party JS/CSS usually mean an incomplete export.
 
 ---
 
