@@ -12,7 +12,7 @@
     "@hono/node-server": "^1.14.1",
     "@snapshot/core": "workspace:*",
     "@snapshot/replay": "workspace:*",
-    "hono": "^4.7.5",
+    "hono": "^4.13.5",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
